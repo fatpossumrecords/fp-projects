@@ -268,7 +268,7 @@
         ${ro ? '' : FP.state.sources?.chartmetric
           ? `<p style="margin-top:10px"><button class="btn btn-sm" data-refresh-followers>Update follower counts from Chartmetric</button> <span class="hint">${d.chartmetric_id ? 'Linked to Chartmetric.' : 'Uses the Spotify link to find the artist, or run “Look up online” first.'}</span></p>`
           : `<p style="margin-top:10px"><button class="btn btn-sm" data-refresh-followers>Update YouTube &amp; Spotify counts</button> <span class="hint">Instagram, TikTok, Facebook and X don't share counts with other apps, so type those in.</span></p>`}`,
-      dsps: () => `${linkTable('dsp_links', DSPS)}${d.followers.spotify_listeners ? `<p class="hint" style="margin-top:6px">Spotify monthly listeners: <b>${Number(d.followers.spotify_listeners.count).toLocaleString('en-US')}</b> (${esc(d.followers.spotify_listeners.source || '')}, ${FP.fmtDate(d.followers.spotify_listeners.asof)})</p>` : ''}<div style="margin-top:10px">${rep('dsp_extra')}</div><p class="hint" style="margin-top:6px">Artist profile pages on each service.</p>`,
+      dsps: () => `${linkTable('dsp_links', DSPS)}<div style="margin-top:10px">${rep('dsp_extra')}</div><p class="hint" style="margin-top:6px">Artist profile pages on each service.</p>`,
       riyl: () => ta('data.riyl', 2, 'Recommended if you like…'),
       smart_links: () => rep('smart_links'),
       assets: () => `
@@ -311,7 +311,10 @@
           <td style="padding:6px 4px"><b>${l}</b></td>
           <td><div style="display:flex;gap:4px;align-items:center">${inp(`data.${group}.${k}`, 'url', ' style="flex:1"')}<span data-open-for="data.${group}.${k}">${openLink(d[group][k])}</span></div></td>
           <td><input type="number" min="0" data-fk="${k}" value="${esc(f?.count ?? '')}"${dis} placeholder="—"></td>
-          <td class="hint" data-asof="${k}">${fmtAsof(f)}</td></tr>`; }).join('')}
+          <td class="hint" data-asof="${k}">${fmtAsof(f)}</td></tr>${k === 'spotify' ? (() => { const ml = d.followers.spotify_listeners; return `<tr>
+          <td style="padding:2px 4px 6px 14px" class="hint">↳ Monthly listeners</td><td></td>
+          <td><input type="number" min="0" data-fk="spotify_listeners" value="${esc(ml?.count ?? '')}"${dis} placeholder="—"></td>
+          <td class="hint" data-asof="spotify_listeners">${fmtAsof(ml)}</td></tr>`; })() : ''}`; }).join('')}
         </tbody></table></div>`;
     }
 
@@ -718,7 +721,10 @@
     const section = (title, body) => body ? h2(title) + body : '';
 
     // Platform rows: the platform name is the link; follower counts alongside when known.
-    const platRows = (list, group, extra) => [...list.map(([k, l]) => ({ name: l, url: d[group][k], f: d.followers[k] })), ...extra.map(x => ({ name: x.label || 'Link', url: x.url }))]
+    const platRows = (list, group, extra) => [...list.flatMap(([k, l]) => [{ name: l, url: d[group][k], f: d.followers[k] },
+        // Spotify monthly listeners sit on their own row right under Spotify.
+        ...(k === 'spotify' && d.followers.spotify_listeners?.count != null ? [{ name: 'Spotify monthly listeners', url: d[group][k], f: d.followers.spotify_listeners }] : [])]),
+      ...extra.map(x => ({ name: x.label || 'Link', url: x.url }))]
       .filter(r => has(r.url)).map(r => ({ name: r.name, url: r.url, count: r.f?.count != null && r.f.count !== '' ? Number(r.f.count).toLocaleString('en-US') : '', asof: r.f?.asof ? FP.fmtDate(r.f.asof) : '' }));
     const socials = platRows(SOCIALS, 'social', d.social_extra), dsps = platRows(DSPS, 'dsp_links', d.dsp_extra);
     const platGrid = rows => grid([['name', 'Platform', (v, r) => `<b>${a(r.url, v)}</b>`], ['count', 'Followers'], ['asof', 'As of']], rows);
@@ -742,7 +748,7 @@
         ['Project manager', esc(p.pm)], ['Genre', esc(d.genre)], ['Hometown', esc(d.hometown)], ['Official website', a(d.website)],
       ])}
       ${section('Social', platGrid(socials))}
-      ${section('DSPs', platGrid(dsps) + (d.followers.spotify_listeners?.count != null ? para(`<b>Spotify monthly listeners:</b> ${Number(d.followers.spotify_listeners.count).toLocaleString('en-US')} <span style="color:${C.muted}">(as of ${esc(FP.fmtDate(d.followers.spotify_listeners.asof))})</span>`) : ''))}
+      ${section('DSPs', platGrid(dsps))}
       ${section('RIYL', has(d.riyl) ? para(txt(d.riyl)) : '')}
       ${section('Smart Links', named(d.smart_links.map(x => [x.label || 'Smart link', x.url])))}
       ${section('Assets', named(assets))}
