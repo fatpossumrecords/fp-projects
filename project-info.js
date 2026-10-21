@@ -24,6 +24,7 @@
     tracks: { cols: [['vol', 'Vol'], ['num', '#'], ['song', 'Song'], ['length', 'Length'], ['isrc', 'ISRC'], ['writers', 'Writers'], ['publishers', 'Publishers']] },
     playlists: { cols: [['dsp', 'DSP', 'dsp'], ['name', 'Playlist', 'playlists'], ['url', 'Link', 'url'], ['status', 'Status', 'plstatus'], ['notes', 'Notes']] },
     tour: { cols: [['date', 'Date', 'date'], ['city', 'City'], ['venue', 'Venue'], ['notes', 'Notes']], keyed: true },
+    press: { cols: [['campaign', 'For'], ['single', 'Single'], ['outlet', 'Publication'], ['url', 'Link'], ['notes', 'Notes']] },
   };
 
   const COL_W = { vol: 'width:56px', num: 'width:56px', length: 'width:80px', song: 'min-width:200px', isrc: 'min-width:140px', url: 'min-width:220px',
@@ -47,7 +48,7 @@
   }
 
   function blankData() {
-    return { social: {}, dsp_links: {}, followers: {}, assets: {}, social_extra: [], dsp_extra: [], smart_links: [], team: [], formats: [], timeline: [], tracks: [], playlists: [], tour: [] };
+    return { press: [], social: {}, dsp_links: {}, followers: {}, assets: {}, social_extra: [], dsp_extra: [], smart_links: [], team: [], formats: [], timeline: [], tracks: [], playlists: [], tour: [] };
   }
 
   // Fills defaults and converts sheets saved by the first version of the form.
@@ -68,6 +69,17 @@
     const bc = Array.isArray(d.smart_links) ? d.smart_links.findIndex(l => /bandcamp/i.test(l.label || '') && /bandcamp\.com/i.test(l.url || '')) : -1;
     if (bc >= 0 && !d.social.bandcamp) { d.social.bandcamp = d.smart_links[bc].url; d.smart_links.splice(bc, 1); }
     if (d.tracklisting && !d.tracks.length) d.tracks = parseTracks(d.tracklisting);
+    // Press links used to be a text box; each line becomes a coverage entry.
+    if (d.press_links && !(Array.isArray(d.press) && d.press.length)) {
+      d.press = String(d.press_links).split('\n').map(l => l.trim()).filter(Boolean).map(l => {
+        const m = l.match(/(https?:\/\/\S+)/);
+        const rest = m ? l.replace(m[1], '').replace(/[-–:|]\s*$|^\s*[-–:|]/g, '').trim() : l;
+        let outlet = rest;
+        if (!outlet && m) { try { outlet = new URL(m[1]).hostname.replace(/^www\./, ''); } catch { /* keep blank */ } }
+        return { campaign: '', single: '', outlet, url: m ? m[1] : '', notes: '' };
+      });
+    }
+    delete d.press_links;
     delete d.tracklisting;
     for (const k of Object.keys(REPS)) if (!Array.isArray(d[k])) d[k] = [];
     for (const k of Object.keys(REPS)) if (REPS[k].keyed) for (const row of d[k]) if (!row.key) row.key = crypto.randomUUID().slice(0, 8);
@@ -299,7 +311,9 @@
           <div class="field wide"><label>Project assets folder <span data-open-for="data.assets.folder">${openLink(d.assets.folder)}</span>${ro ? '' : ' · <a href="#" data-dbx="data.assets.folder">Choose in Dropbox</a>'}</label>${inp('data.assets.folder', 'url', ' placeholder="Dropbox folder with everything for this release"')}</div>
           ${ASSETS.map(([k, l]) => linkField('data.assets.' + k, l + ' link', ro ? '' : ` · <a href="#" data-dbx="data.assets.${k}">Dropbox</a>`)).join('')}
         </div>`,
-      team: () => `${rep('team')}<p class="hint" style="margin-top:6px">Start typing a name to pick someone already saved. New people are remembered when you save, and this artist's team fills in next time.</p>`,
+      team: () => `${ro || d.team.length < 2 ? '' : `<div class="toolbar" style="margin-bottom:6px"><span class="hint">Sort by</span>
+          <div class="seg seg-sm">${[['name', 'Name'], ['role', 'Role'], ['company', 'Company']].map(([k, l]) => `<button type="button" data-team-sort="${k}">${l}</button>`).join('')}</div></div>`}
+        ${rep('team')}<p class="hint" style="margin-top:6px">Start typing a name to pick someone already saved. New people are remembered when you save, and this artist's team fills in next time.</p>`,
       formats: () => `${rep('formats')}<p class="hint" style="margin-top:6px">Each format appears as its own row on the Release Schedule and in the Timeline below.</p>`,
       timeline: () => timelineHtml(),
       tracks: () => `<div class="toolbar" style="margin-bottom:8px">
@@ -311,7 +325,9 @@
       marketing: () => `<div class="grid">${FP.field('Retail', ta('data.retail', 4), 'wide')}${FP.field('Digital', ta('data.digital', 4), 'wide')}</div>`,
       playlists: () => `${rep('playlists')}<p class="hint" style="margin-top:6px">Start typing a playlist name to pick one you've used before, and its link fills in. New playlists are saved to the library when you save.</p>
         ${d.dsp && Object.values(d.dsp).some(v => v?.targets || v?.current) ? `<details style="margin-top:8px"><summary class="hint">Earlier playlisting notes</summary>${Object.entries(d.dsp).map(([k, v]) => v?.targets || v?.current ? `<p><b>${esc(k)}</b>: ${esc(v.targets || '')} ${v.current ? ' / current: ' + esc(v.current) : ''}</p>` : '').join('')}</details>` : ''}`,
-      press: () => `<div class="grid">${FP.field('Quotes', ta('data.press_quotes', 4), 'wide')}${FP.field('Links', ta('data.press_links', 3), 'wide')}${FP.field('Previous press', ta('data.press_previous', 3), 'wide')}</div>`,
+      press: () => `<div class="grid">${FP.field('Quotes', ta('data.press_quotes', 4, 'Pull quotes for the one-sheet'), 'wide')}</div>
+        <div style="margin-top:10px"><label class="hint" style="font-weight:600">Coverage</label>${pressTable()}</div>
+        <div class="grid" style="margin-top:10px">${FP.field('Previous press', ta('data.press_previous', 3), 'wide')}</div>`,
       radio: () => ta('data.radio', 3),
       syncs: () => ta('data.syncs', 3),
       tour: () => `<div class="toolbar" style="margin-bottom:8px">
@@ -339,6 +355,21 @@
           <td><input type="number" min="0" data-fk="spotify_listeners" value="${esc(ml?.count ?? '')}"${dis} placeholder="—"></td>
           ${gcell('spotify_listeners')}<td class="hint" data-asof="spotify_listeners">${fmtAsof(ml)}</td></tr>`; })() : ''}`; }).join('')}
         </tbody></table></div>`;
+    }
+
+    // Press coverage: what it's for (single / album / tour), the outlet, link and notes.
+    function pressTable() {
+      const songs = d.tracks.map(t => t.song).filter(Boolean);
+      return `<datalist id="dl-singles">${songs.map(x => `<option value="${esc(x)}">`).join('')}</datalist>
+        <div class="rep"><table><thead><tr><th style="width:120px">For</th><th style="width:180px">Single</th><th>Publication</th><th>Link</th><th>Notes</th><th></th></tr></thead><tbody>
+        ${d.press.map((r, i) => { const a = `data-rep="press" data-i="${i}"${dis}`; return `<tr>
+          <td><select ${a} data-k="campaign">${FP.options(['Single', 'Album', 'Tour'], r.campaign)}</select></td>
+          <td>${r.campaign === 'Single' ? `<input type="text" ${a} data-k="single" value="${esc(r.single)}" list="dl-singles" placeholder="Which single?">` : '<span class="hint">—</span>'}</td>
+          <td><input type="text" ${a} data-k="outlet" value="${esc(r.outlet)}" placeholder="e.g. Pitchfork"></td>
+          <td><div style="display:flex;gap:4px;align-items:center"><input type="url" ${a} data-k="url" value="${esc(r.url)}" style="flex:1">${openLink(r.url)}</div></td>
+          <td><input type="text" ${a} data-k="notes" value="${esc(r.notes)}" placeholder="Optional"></td>
+          <td style="width:30px">${ro ? '' : `<button class="btn-ghost btn-sm" data-del="press" data-i="${i}" title="Remove">✕</button>`}</td></tr>`; }).join('')}
+        </tbody></table>${ro ? '' : '<button class="btn btn-sm add" data-add="press">+ Add coverage</button>'}</div>`;
     }
 
     // Tour rows: editable date/city/venue/notes, plus an Announced marker. Pulled
@@ -407,7 +438,7 @@
     datalists();
     const refresh = k => { box.querySelector('#sec-' + k).innerHTML = SECTIONS[k](); };
     const refreshAll = () => TITLES.forEach(([k]) => refresh(k));
-    const repSection = name => ({ social_extra: 'social', dsp_extra: 'dsps', smart_links: 'smart_links', team: 'team', formats: 'formats', timeline: 'timeline', tracks: 'tracks', playlists: 'playlists', tour: 'tour' })[name];
+    const repSection = name => ({ social_extra: 'social', dsp_extra: 'dsps', smart_links: 'smart_links', team: 'team', formats: 'formats', timeline: 'timeline', tracks: 'tracks', playlists: 'playlists', tour: 'tour', press: 'press' })[name];
     const profileHint = () => {
       const el = box.querySelector('[data-profile-hint]');
       if (el) el.innerHTML = !ro && artistProfile(proj.artist) ? '<a href="#" data-fill-profile>Fill from artist profile</a> ·' : '';
@@ -452,6 +483,7 @@
     box.addEventListener('change', e => {
       const t = e.target;
       if (t.dataset.tourAnn !== undefined) { d.tour[+t.dataset.tourAnn].announced = t.checked; refresh('tour'); onChange(); return; }
+      if (t.dataset.rep === 'press' && t.dataset.k === 'campaign') { if (t.value !== 'Single') d.press[+t.dataset.i].single = ''; refresh('press'); onChange(); return; }
       if (t.dataset.p === 'artist') fillProfile(true);
       // Picking a known contact fills the rest of their row.
       if (t.dataset.rep === 'team' && t.dataset.k === 'name') {
@@ -491,6 +523,14 @@
       }
       if (t.matches('[data-fill-profile]')) { e.preventDefault(); fillProfile(false); }
       if (t.matches('[data-lookup]')) { e.preventDefault(); lookupOnline(); }
+      if (t.matches('[data-team-sort]')) {
+        const k = t.dataset.teamSort;
+        // Rows missing the chosen field go last; ties fall back to name.
+        d.team.sort((x, y) => (!x[k]) - (!y[k]) || String(x[k] || '').localeCompare(String(y[k] || ''), undefined, { sensitivity: 'base' })
+          || String(x.name || '').localeCompare(String(y.name || '')));
+        refresh('team'); onChange();
+        box.querySelector(`[data-team-sort="${k}"]`)?.classList.add('on');
+      }
       if (t.matches('[data-pull-tour]')) { t.disabled = true; try { await hooks.pullTour(); } finally { t.disabled = false; } }
       if (t.matches('[data-refresh-followers]')) {
         if (!d.social.youtube && !d.dsp_links.spotify) return FP.toast('Add the YouTube channel and/or Spotify artist link first', true);
@@ -835,7 +875,15 @@
     const page2 = [
       section('Retail &amp; digital marketing', lines([has(d.retail) && `<b>Retail.</b> ${linkify(d.retail)}`, has(d.digital) && `<b>Digital.</b> ${linkify(d.digital)}`])),
       section('Digital playlisting', lines(d.playlists.filter(x => has(x.name)).map(x => `${x.dsp ? esc(x.dsp) + dot : ''}<b>${a(x.url, x.name)}</b>${x.status ? ' ' + muted('(' + esc(x.status) + ')') : ''}${x.notes ? dot + esc(x.notes) : ''}`))),
-      section('Press', lines([has(d.press_links) && `<b>Links.</b> ${linkify(d.press_links)}`, has(d.press_previous) && `<b>Previous press.</b> ${linkify(d.press_previous)}`])),
+      section('Press', (() => {
+        const items = d.press.filter(x => has(x.outlet) || FP.safeUrl(x.url));
+        const groupOf = x => x.campaign === 'Single' ? `Single${has(x.single) ? ' — ' + x.single : ''}` : x.campaign || 'Other';
+        const order = g => g.startsWith('Album') ? 0 : g.startsWith('Single') ? 1 : g === 'Tour' ? 2 : 3;
+        const groups = [...new Set(items.map(groupOf))].sort((a, b) => order(a) - order(b) || a.localeCompare(b));
+        const line = x => `<b>${a(x.url, x.outlet || shortUrl(x.url))}</b>${x.notes ? dot + esc(x.notes) : ''}`;
+        return groups.map(g => para(`<span style="font-size:8pt;font-weight:bold;color:${C.muted}">${esc(g).toUpperCase()}</span>`, 'margin-top:6pt') + lines(items.filter(x => groupOf(x) === g).map(line))).join('')
+          + (has(d.press_previous) ? para(`<b>Previous press.</b> ${linkify(d.press_previous)}`, 'margin-top:6pt') : '');
+      })()),
       section('Radio', has(d.radio) ? para(linkify(d.radio)) : ''),
       section('Syncs', has(d.syncs) ? para(linkify(d.syncs)) : ''),
       section('Recording details', has(d.recording) ? para(linkify(d.recording)) : ''),
