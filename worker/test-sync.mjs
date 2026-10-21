@@ -174,6 +174,18 @@ ok(den.announced === false, 'manual show with no listing stays not announced');
 ok(t1.length === 4 && t1.find(t => t.city.startsWith('Atlanta')).cancelled === true && t1.find(t => t.notes === 'Pitchfork Music Festival'), 'new concerts and festivals added, cancelled flagged');
 const pull2 = await A('POST', `/api/projects/${tp3.id}/tour/pull`);
 ok(pull2.project.data.tour.length === 4 && pull2.added === 0, 'pulling again adds no duplicates');
+// city written differently but same venue / only show that day → still linked, not duplicated
+const tp5 = await A('POST', '/api/projects', { artist: 'G2', title: 'H2', data: { chartmetric_id: '2000', tour: [
+  { key: 'a', date: '2027-03-14', city: 'Music City', venue: 'Basement East', announced: false, source: 'manual' },
+  { key: 'b', date: '2027-03-15', city: 'ATL', venue: '', announced: false, source: 'manual' } ] } });
+const t5 = (await A('POST', `/api/projects/${tp5.id}/tour/pull`)).project.data.tour;
+ok(t5.length === 3 && t5.find(t => t.key === 'a').announced && t5.find(t => t.key === 'b').ext_id === 'cm:8', 'matches by venue, or the only show that day, when the city is written differently');
+// a pulled show the team deleted stays deleted
+const p5 = await A('GET', '/api/projects/' + tp5.id);
+p5.data.tour = p5.data.tour.filter(t => t.ext_id !== 'cm:9'); p5.data.tour_dismissed = ['cm:9'];
+await A('PUT', '/api/projects/' + tp5.id, { data: p5.data, _expected_updated_at: p5.updated_at });
+const t5b = (await A('POST', `/api/projects/${tp5.id}/tour/pull`)).project.data.tour;
+ok(t5b.length === 2 && !t5b.some(t => t.ext_id === 'cm:9'), 'a deleted pulled show is not added back');
 
 // 12. scheduled Chartmetric refresh (runs as the cron would)
 const tp4 = await A('POST', '/api/projects', { artist: 'Nina Sky', title: 'Weekly', release_date: '2027-02-01', data: { chartmetric_id: '2000', followers: { instagram: { count: 50000, asof: '2026-09-01' } } } });

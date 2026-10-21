@@ -1160,11 +1160,22 @@ async function cmEvents(cmId, env) {
 
 const cityKey = c => String(c || '').split(',')[0].trim().toLowerCase();
 
-function mergeTour(rows, events) {
+const venueKey = v => String(v || '').toLowerCase().replace(/^the\s+/, '').replace(/[^a-z0-9]+/g, '');
+
+// Match a listing to an existing row, most certain first:
+//   same listing → same date + city → same date + venue → the only unlinked show that day.
+// Listings someone deleted from the project (tour_dismissed) are never re-added.
+function mergeTour(rows, events, dismissed = []) {
   rows = (rows || []).map(r => ({ ...r }));
   let added = 0, updated = 0;
+  const skip = new Set(dismissed);
   for (const ev of events) {
-    const hit = rows.find(r => r.ext_id === ev.ext_id) || rows.find(r => !r.ext_id && r.date === ev.date && cityKey(r.city) === cityKey(ev.city));
+    if (skip.has(ev.ext_id)) continue;
+    const open = rows.filter(r => !r.ext_id && r.date === ev.date);
+    const hit = rows.find(r => r.ext_id === ev.ext_id)
+      || open.find(r => cityKey(r.city) === cityKey(ev.city))
+      || open.find(r => r.venue && venueKey(r.venue) === venueKey(ev.venue))
+      || (open.length === 1 && !events.some(o => o !== ev && o.date === ev.date) ? open[0] : null);
     if (hit) {
       const before = JSON.stringify(hit);
       hit.ext_id = ev.ext_id; hit.ticket_url = ev.ticket_url || hit.ticket_url || ''; hit.cancelled = ev.cancelled; hit.announced = true;
@@ -1201,7 +1212,7 @@ async function pullProjectTour(projectId, user, env, strict, background = false)
     return { added: 0, updated: 0, skipped: true };
   }
   const events = await cmEvents(cmId, env);
-  const { rows, added, updated } = mergeTour(p.data.tour, events);
+  const { rows, added, updated } = mergeTour(p.data.tour, events, p.data.tour_dismissed || []);
   p.data.tour = rows;
   p.data.chartmetric_id = String(cmId);
   p.data.tour_synced_at = now();
@@ -1224,7 +1235,7 @@ async function scheduledChartmetric(env) {
   const sys = { email: 'chartmetric-sync' };
 
   const due = async (field, since, limit) => (await env.DB.prepare(
-    `SELECT id FROM projects WHERE ${current} AND (json_extract(data, '$.${field}') IS NULL OR json_extract(data, '$.${field}') < ?) ORDER BY release_date LIMIT ${limit}`)
+    `SELECT id FROM projects WHERE ${current} AND (json_extract(data, '$.${field}') IS NULL OR json_extract(data, '$.${field}') < ?) ORDER BY release_date IS NULL, release_date LIMIT ${limit}`)
     .bind(since).all()).results;
 
   for (const { id } of await due('tour_synced_at', dayStart, 5)) {

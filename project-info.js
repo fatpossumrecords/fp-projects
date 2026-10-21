@@ -444,6 +444,7 @@
       return `<div class="rep compact"><table>${head}<tbody>${upcoming.map(x => row(x.r, x.i)).join('') || `<tr><td colspan="6" class="hint" style="padding:6px">No upcoming dates.</td></tr>`}</tbody></table>
           ${ro ? '' : '<button class="btn btn-sm add" data-add="tour">+ Add date</button>'}</div>
         ${upcoming.length ? `<p class="hint" style="margin-top:4px">${live.filter(x => !x.r.announced).length} not announced · ${live.filter(x => x.r.announced).length} announced${upcoming.some(x => x.r.cancelled) ? ` · ${upcoming.filter(x => x.r.cancelled).length} cancelled` : ''}</p>` : ''}
+        ${d.tour_dismissed?.length ? `<p class="hint" style="margin-top:4px">${d.tour_dismissed.length} pulled show${d.tour_dismissed.length === 1 ? '' : 's'} removed by hand and won't be re-added.${ro ? '' : ' <a href="#" data-tour-restore>Allow them back</a>'}</p>` : ''}
         ${past.length ? `<details style="margin-top:8px"><summary class="hint" style="cursor:pointer;font-weight:600">Past tour dates (${past.length})</summary>
           <div class="rep compact" style="margin-top:4px"><table>${head}<tbody>${past.map(x => row(x.r, x.i)).join('')}</tbody></table></div></details>` : ''}`;
     }
@@ -573,6 +574,9 @@
         onChange();
       }
       if (del) {
+        // A deleted pulled show is remembered, so the daily Chartmetric refresh doesn't re-add it.
+        const gone = d[del.dataset.del][+del.dataset.i];
+        if (del.dataset.del === 'tour' && gone?.ext_id) (d.tour_dismissed ||= []).push(gone.ext_id);
         d[del.dataset.del].splice(+del.dataset.i, 1);
         refresh(repSection(del.dataset.del));
         if (del.dataset.del === 'formats') refresh('timeline');
@@ -606,6 +610,7 @@
         refresh('team'); onChange();
         box.querySelector(`[data-team-sort="${k}"]`)?.classList.add('on');
       }
+      if (t.matches('[data-tour-restore]')) { e.preventDefault(); d.tour_dismissed = []; refresh('tour'); onChange(); FP.toast('They’ll come back on the next pull. Save to keep this.'); }
       if (t.matches('[data-pull-tour]')) { t.disabled = true; try { await hooks.pullTour(); } finally { t.disabled = false; } }
       if (t.matches('[data-refresh-followers]')) {
         if (!d.social.youtube && !d.dsp_links.spotify) return FP.toast('Add the YouTube channel and/or Spotify artist link first', true);
