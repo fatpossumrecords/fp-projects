@@ -29,6 +29,23 @@
   const COL_W = { vol: 'width:56px', num: 'width:56px', length: 'width:80px', song: 'min-width:200px', isrc: 'min-width:140px', url: 'min-width:220px',
     name: 'min-width:160px', date: 'width:150px', format: 'min-width:120px', dsp: 'width:150px', status: 'width:120px' };
 
+  // Follower change: Chartmetric's 30-day diff when we have it, otherwise the
+  // change since the previous count someone typed in.
+  function growth(f) {
+    if (!f || f.count == null || f.count === '') return null;
+    if (f.month != null) return { diff: Number(f.month), pct: f.month_pct != null ? Number(f.month_pct) : null, span: '30 days' };
+    if (f.prev?.count != null && f.prev.asof) {
+      const diff = Number(f.count) - Number(f.prev.count);
+      return { diff, pct: Number(f.prev.count) ? diff / Number(f.prev.count) * 100 : null, span: 'since ' + FP.fmtDate(f.prev.asof, { month: 'short', day: 'numeric' }) };
+    }
+    return null;
+  }
+  function growthText(g, { withSpan = true } = {}) {
+    if (!g) return '';
+    const n = Math.abs(g.diff), short = n >= 1e6 ? (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M' : n >= 1e4 ? Math.round(n / 1e3) + 'K' : n >= 1e3 ? (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'K' : String(Math.round(n));
+    return `${g.diff > 0 ? '+' : g.diff < 0 ? '−' : '±'}${short}${g.pct != null ? ` (${g.diff >= 0 ? '+' : '−'}${Math.abs(g.pct).toFixed(1)}%)` : ''}${withSpan ? ' ' + g.span : ''}`;
+  }
+
   function blankData() {
     return { social: {}, dsp_links: {}, followers: {}, assets: {}, social_extra: [], dsp_extra: [], smart_links: [], team: [], formats: [], timeline: [], tracks: [], playlists: [], tour: [] };
   }
@@ -311,15 +328,16 @@
     // Platform | link | followers | as of. Follower counts are saved to the artist profile too.
     function linkTable(group, list) {
       const fmtAsof = f => f?.asof ? `${f.source && f.source !== 'manual' ? f.source + ', ' : ''}${FP.fmtDate(f.asof, { month: 'short', day: 'numeric', year: 'numeric' })}` : '';
-      return `<div class="rep"><table><thead><tr><th style="width:130px">Platform</th><th>Link</th><th style="width:120px">Followers</th><th style="width:150px">As of</th></tr></thead><tbody>
+      const gcell = key => { const g = growth(d.followers[key]); return `<td class="hint" style="white-space:nowrap;${g ? `color:${g.diff > 0 ? 'var(--green)' : g.diff < 0 ? 'var(--red)' : 'inherit'}` : ''}">${esc(growthText(g))}</td>`; };
+      return `<div class="rep"><table><thead><tr><th style="width:130px">Platform</th><th>Link</th><th style="width:120px">Followers</th><th style="width:150px">Change</th><th style="width:150px">As of</th></tr></thead><tbody>
         ${list.map(([k, l]) => { const f = d.followers[k]; return `<tr>
           <td style="padding:6px 4px"><b>${l}</b></td>
           <td><div style="display:flex;gap:4px;align-items:center">${inp(`data.${group}.${k}`, 'url', ' style="flex:1"')}<span data-open-for="data.${group}.${k}">${openLink(d[group][k])}</span></div></td>
           <td><input type="number" min="0" data-fk="${k}" value="${esc(f?.count ?? '')}"${dis} placeholder="—"></td>
-          <td class="hint" data-asof="${k}">${fmtAsof(f)}</td></tr>${k === 'spotify' ? (() => { const ml = d.followers.spotify_listeners; return `<tr>
+          ${gcell(k)}<td class="hint" data-asof="${k}">${fmtAsof(f)}</td></tr>${k === 'spotify' ? (() => { const ml = d.followers.spotify_listeners; return `<tr>
           <td style="padding:2px 4px 6px 14px" class="hint">↳ Monthly listeners</td><td></td>
           <td><input type="number" min="0" data-fk="spotify_listeners" value="${esc(ml?.count ?? '')}"${dis} placeholder="—"></td>
-          <td class="hint" data-asof="spotify_listeners">${fmtAsof(ml)}</td></tr>`; })() : ''}`; }).join('')}
+          ${gcell('spotify_listeners')}<td class="hint" data-asof="spotify_listeners">${fmtAsof(ml)}</td></tr>`; })() : ''}`; }).join('')}
         </tbody></table></div>`;
     }
 
@@ -416,8 +434,11 @@
       }
       if (t.dataset.fk) {
         const k = t.dataset.fk;
+        const old = d.followers[k];
+        // Keep the last reading from an earlier day so the change can be shown.
+        const prev = old && old.asof && old.asof !== FP.today() ? { count: old.count, asof: old.asof } : old?.prev;
         if (t.value === '') delete d.followers[k];
-        else d.followers[k] = { count: Number(t.value), asof: FP.today(), source: 'manual' };
+        else d.followers[k] = { count: Number(t.value), asof: FP.today(), source: 'manual', ...(prev ? { prev } : {}) };
         const a = box.querySelector(`[data-asof="${k}"]`); if (a) a.textContent = t.value === '' ? '' : FP.fmtDate(FP.today(), { month: 'short', day: 'numeric', year: 'numeric' });
         onChange();
       }
@@ -735,8 +756,6 @@
     const W = 'border:1px solid #ffffff';                         // invisible table borders
     const cols = (...cells) => `<table style="border-collapse:collapse;width:100%;${W}"><tr>${cells.map(([w, html]) =>
       `<td style="width:${w};vertical-align:top;padding:0 16pt 0 0;${W}">${html}</td>`).join('')}</tr></table>`;
-    const k = n => { n = Number(n); return n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace(/\.0$/, '') + 'M' : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1).replace(/\.0$/, '') + 'K' : String(n); };
-    const count = key => { const f = d.followers[key]; return f?.count != null && f.count !== '' ? k(f.count) : ''; };
     const date = v => v ? esc(FP.fmtDate(v, { month: 'short', day: 'numeric', year: 'numeric' })) : 'TBD';
     const longDate = v => v ? esc(FP.fmtDate(v, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })) : 'Release date TBD';
 
@@ -744,15 +763,31 @@
     const formats = d.formats.filter(f => has(f.format) || has(f.title));
     const art = imageUrl(d.assets.album_art) || imageUrl(d.assets.single_art);
     const points = String(d.selling_points || '').split('\n').map(s => s.replace(/^[-•*]\s*/, '').trim()).filter(Boolean);
-    const platLine = (list, group, extra, describe) => {
-      const items = [...list.map(([key, l]) => FP.safeUrl(d[group][key]) ? `<b>${a(d[group][key], l)}</b>${describe(key) ? ' ' + muted('(' + describe(key) + ')') : ''}` : ''),
-        ...extra.map(x => FP.safeUrl(x.url) ? `<b>${a(x.url, x.label || 'Link')}</b>` : '')].filter(Boolean);
-      return items.length ? para(items.join(dot)) : '';
-    };
     const tourLines = rows => lines(rows.filter(t => has(t.date) || has(t.city)).map(t =>
       `<b>${t.date ? esc(FP.fmtDate(t.date, { weekday: 'short', month: 'short', day: 'numeric' })) : 'TBD'}</b>&nbsp;&nbsp;${esc(t.city || '')}${t.venue ? ' — ' + (FP.safeUrl(t.ticket_url) ? a(t.ticket_url, t.venue) : esc(t.venue)) : ''}${t.notes ? dot + esc(t.notes) : ''}${
         t.cancelled ? ' ' + muted('(cancelled)') : !t.announced ? ` <b style="color:${C.accent}">· Not announced</b>` : ''}`));
     const followerDates = Object.values(d.followers).map(f => f?.asof).filter(Boolean).sort();
+    const timeline = [...formatTimeline(p), ...d.timeline.filter(t => has(t.item)), ...splitDatedLines(d.timeline_notes).dated]
+      .sort((x, y) => String(x.date || '9').localeCompare(String(y.date || '9')));
+    const otherNotes = splitDatedLines(d.timeline_notes).other;
+    const assets = [['Project folder', d.assets.folder], ...ASSETS.map(([key, lab]) => [lab, d.assets[key]])].filter(([, u]) => FP.safeUrl(u));
+    const smart = d.smart_links.filter(x => FP.safeUrl(x.url));
+
+    // Socials & streaming: one row per platform with followers and their change,
+    // so growth reads at a glance. Spotify gets followers and monthly listeners.
+    const hair = (html, { head, right, color } = {}) => `<td style="padding:3pt 10pt 3pt 0;border:1px solid #ffffff;border-bottom:1px solid ${C.rule};vertical-align:top;font-size:9pt;${right ? 'text-align:right;' : ''}${head ? `color:${C.muted};font-weight:bold;` : ''}${color ? `color:${color};` : ''}">${html}</td>`;
+    const statRows = [
+      ...SOCIALS.map(([key, l]) => ({ name: l, url: d.social[key], f: d.followers[key], unit: key === 'youtube' ? 'subscribers' : key === 'facebook' ? 'likes' : 'followers' })),
+      ...d.social_extra.map(x => ({ name: x.label || 'Link', url: x.url })),
+      ...DSPS.flatMap(([key, l]) => [{ name: l, url: d.dsp_links[key], f: d.followers[key], unit: key === 'deezer' ? 'fans' : 'followers' },
+        ...(key === 'spotify' && d.followers.spotify_listeners?.count != null ? [{ name: 'Spotify', url: d.dsp_links.spotify, f: d.followers.spotify_listeners, unit: 'monthly listeners' }] : [])]),
+      ...d.dsp_extra.map(x => ({ name: x.label || 'Link', url: x.url })),
+    ].filter(r => FP.safeUrl(r.url) || r.f?.count != null);
+    const anyCounts = statRows.some(r => r.f?.count != null);
+    const statsTable = statRows.length ? `<table style="border-collapse:collapse;width:100%;${W}">
+        ${anyCounts ? `<tr>${hair('Platform', { head: true })}${hair('Audience', { head: true, right: true })}${hair('', { head: true })}${hair('Change', { head: true, right: true })}</tr>` : ''}
+        ${statRows.map(r => { const g = growth(r.f); return `<tr>${hair(`<b>${a(r.url, r.name)}</b>`)}${hair(r.f?.count != null ? Number(r.f.count).toLocaleString('en-US') : muted('—'), { right: true })}${hair(r.f?.count != null ? muted(r.unit || '') : '')}${hair(g ? esc(growthText(g)) : '', { right: true, color: g ? (g.diff > 0 ? '#1e7e4a' : g.diff < 0 ? C.accent : C.muted) : '' })}</tr>`; }).join('')}
+      </table>${followerDates.length ? para(`<span style="font-size:8pt;color:${C.muted}">As of ${esc(FP.fmtDate(followerDates.at(-1)))}${statRows.some(r => r.f?.month != null) ? '; change is over the last 30 days (Chartmetric)' : ''}.</span>`, 'margin-top:3pt') : ''}` : '';
 
     // ── PAGE 1: ONE-SHEET ──
     const header = cols(['78%', `
@@ -784,27 +819,20 @@
 
     const page1 = `${header}<hr style="border:none;border-top:1px solid ${C.rule};margin:8pt 0 0 0">
       ${cols(['58%', left], ['42%', right])}
-      ${block('Tour dates', tourLines(d.tour))}
-      ${block('Links', platLine(SOCIALS, 'social', d.social_extra, count)
-        + platLine(DSPS, 'dsp_links', d.dsp_extra, key => key === 'spotify' ? [count('spotify') && count('spotify') + ' followers', count('spotify_listeners') && count('spotify_listeners') + ' monthly listeners'].filter(Boolean).join(', ') : count(key))
-        + (followerDates.length ? para(`<span style="font-size:8pt;color:${C.muted}">Follower counts as of ${esc(FP.fmtDate(followerDates.at(-1)))}.</span>`) : ''))}
-      ${block('Contacts', lines(contacts))}`;
+      ${block('Timeline', lines(timeline.map(t => `<b>${date(t.date)}</b>&nbsp;&nbsp;${esc(t.item)}`)) + (otherNotes.length ? para(muted(linkify(otherNotes.join('\n')))) : ''))}
+      ${block('Smart links', smart.length ? para(smart.map(x => a(x.url, x.label || 'Smart link')).join(dot)) : '')}
+      ${block('Assets', assets.length ? para(assets.map(([n, u]) => a(u, n)).join(dot)) : '')}
+      ${block('Socials &amp; streaming', statsTable)}
+      ${block('Contacts', lines(contacts))}
+      ${block('Tour dates', tourLines(d.tour))}`;
 
     // ── PAGE 2+: PROJECT DETAILS ──
-    const timeline = [...formatTimeline(p), ...d.timeline.filter(t => has(t.item)), ...splitDatedLines(d.timeline_notes).dated]
-      .sort((x, y) => String(x.date || '9').localeCompare(String(y.date || '9')));
-    const otherNotes = splitDatedLines(d.timeline_notes).other;
     const tcols = [['num', '#'], ['song', 'Song'], ['length', 'Length'], ['isrc', 'ISRC'], ['writers', 'Writers'], ['publishers', 'Publishers']].filter(([c]) => c === 'num' || tracks.some(t => has(t[c])));
     const cell = (html, head) => `<td style="padding:3pt 8pt 3pt 0;border:1px solid #ffffff;border-bottom:1px solid ${C.rule};vertical-align:top;font-size:9pt;${head ? `color:${C.muted};font-weight:bold;` : ''}">${html}</td>`;
     const credits = tracks.length ? `<table style="border-collapse:collapse;width:100%;${W}"><tr>${tcols.map(([, l]) => cell(esc(l), true)).join('')}</tr>
         ${tracks.map((t, i) => `<tr>${tcols.map(([c]) => cell(c === 'song' ? `<b>${esc(t.song)}</b>` : esc(c === 'num' ? (t.vol || '') + (t.num || i + 1) : t[c] || ''))).join('')}</tr>`).join('')}</table>` : '';
-    const assets = [['Project folder', d.assets.folder], ...ASSETS.map(([key, lab]) => [lab, d.assets[key]])].filter(([, u]) => FP.safeUrl(u));
-    const smart = d.smart_links.filter(x => FP.safeUrl(x.url));
 
     const page2 = [
-      section('Timeline', lines(timeline.map(t => `<b>${date(t.date)}</b>&nbsp;&nbsp;${esc(t.item)}`)) + (otherNotes.length ? para(muted(linkify(otherNotes.join('\n')))) : '')),
-      section('Assets', assets.length ? para(assets.map(([n, u]) => a(u, n)).join(dot)) : ''),
-      section('Smart links', smart.length ? para(smart.map(x => a(x.url, x.label || 'Smart link')).join(dot)) : ''),
       section('Retail &amp; digital marketing', lines([has(d.retail) && `<b>Retail.</b> ${linkify(d.retail)}`, has(d.digital) && `<b>Digital.</b> ${linkify(d.digital)}`])),
       section('Digital playlisting', lines(d.playlists.filter(x => has(x.name)).map(x => `${x.dsp ? esc(x.dsp) + dot : ''}<b>${a(x.url, x.name)}</b>${x.status ? ' ' + muted('(' + esc(x.status) + ')') : ''}${x.notes ? dot + esc(x.notes) : ''}`))),
       section('Press', lines([has(d.press_links) && `<b>Links.</b> ${linkify(d.press_links)}`, has(d.press_previous) && `<b>Previous press.</b> ${linkify(d.press_previous)}`])),

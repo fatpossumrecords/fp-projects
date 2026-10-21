@@ -44,6 +44,12 @@ globalThis.fetch = async (url, opts = {}) => {
       ? [{ id: 9, event_name: 'Pitchfork Music Festival', type: 'Festival', start_date: '2027-07-17T00:00:00.000Z', venue_name: 'Union Park', city: { name: 'Chicago', province: 'Illinois' }, code2: 'US' }]
       : [{ id: 7, event_name: 'Nina Sky at The Basement East', type: 'Concert', start_date: '2027-03-14T00:00:00.000Z', venue_name: 'The Basement East', city: { name: 'Nashville', province: 'Tennessee' }, code2: 'US', ticketmaster_event_url: 'https://ticketmaster.com/e/7' },
          { id: 8, event_name: 'Nina Sky at Terminal West (cancelled)', type: 'Concert', start_date: '2027-03-15T00:00:00.000Z', venue_name: 'Terminal West', city: { name: 'Atlanta', province: 'Georgia' }, code2: 'US' }] });
+    if (u.pathname.startsWith('/api/artist/2000/stat/')) {
+      const field = u.searchParams.get('field');
+      if (u.pathname.endsWith('/instagram')) return J({ obj: { [field]: [{ value: 52400, timestp: '2026-10-20T08:00:00.000Z', weekly_diff: 300, monthly_diff: 1200, monthly_diff_percent: 2.34 }] } });
+      if (u.pathname.endsWith('/spotify') && field === 'listeners') return J({ obj: { listeners: [{ value: 106000000, timestp: '2026-10-20T08:00:00.000Z', weekly_diff: -50000, monthly_diff: -239091, monthly_diff_percent: -0.67 }] } });
+      return new Response('{}', { status: 500 });
+    }
     if (u.pathname === '/api/artist/2000/relatedartists') return J({ obj: [{ id: 1, name: 'Ciara' }, { id: 2, name: 'Cassie' }] });
     return J({});
   }
@@ -151,7 +157,8 @@ ok(!(await A('GET', '/api/releases')).some(r => r.id === tr.id) && cals.REL.get(
 const cm = await A('GET', '/api/chartmetric/artist/2000');
 ok(cm.website === 'http://www.ninasky.com/' && cm.social.instagram === 'https://www.instagram.com/ninasky/' && cm.dsp_links.apple === 'https://music.apple.com/us/artist/123', 'Chartmetric links map to website / socials / DSPs (genius ignored)');
 ok(cm.hometown === 'Queens, US' && cm.genre === 'Pop, R&B/Soul, Dance' && cm.riyl === 'Ciara, Cassie', 'Chartmetric hometown, genre and RIYL');
-ok(cm.followers.instagram.count === 52000 && cm.followers.spotify_listeners.count === 106103812 && !cm.followers.facebook, 'Chartmetric follower counts (string values parsed, nulls skipped)');
+ok(cm.followers.instagram.count === 52400 && cm.followers.instagram.month === 1200 && cm.followers.instagram.month_pct === 2.34 && cm.followers.instagram.asof === '2026-10-20', 'Chartmetric growth: latest point with 30-day change');
+ok(cm.followers.spotify_listeners.month === -239091 && cm.followers.tiktok.count === 9100 && cm.followers.tiktok.month == null && !cm.followers.facebook, 'falls back to the plain count when a stat call fails; nulls skipped');
 const fr = await A('POST', '/api/followers', { spotify: 'https://open.spotify.com/artist/3TVXtAsR1Inumwj472S9r4' });
 ok(fr.source === 'Chartmetric' && fr.chartmetric_id === '2000' && fr.counts.tiktok.count === 9100, 'follower refresh finds the artist by Spotify link via Chartmetric');
 

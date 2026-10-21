@@ -1078,6 +1078,11 @@ async function cmSearch(q, env) {
 const CM_STATS = { instagram: 'ins_followers', tiktok: 'tiktok_followers', youtube: 'ycs_subscribers', facebook: 'fs_likes', twitter: ['twitter_followers', 'ts_followers'],
   soundcloud: 'soundcloud_followers', spotify: 'sp_followers', spotify_listeners: 'sp_monthly_listeners', deezer: 'deezer_fans' };
 
+// our follower key → Chartmetric stat [source, field]
+const CM_SERIES = { instagram: ['instagram', 'followers'], tiktok: ['tiktok', 'followers'], youtube: ['youtube_channel', 'subscribers'],
+  facebook: ['facebook', 'likes'], twitter: ['twitter', 'followers'], soundcloud: ['soundcloud', 'followers'],
+  spotify: ['spotify', 'followers'], spotify_listeners: ['spotify', 'listeners'], deezer: ['deezer', 'fans'] };
+
 async function cmArtist(cmId, env) {
   if (!/^\d+$/.test(String(cmId))) throw new HttpError(400, 'Bad Chartmetric id');
   const meta = (await cmGet(`/artist/${cmId}`, env)).obj || {};
@@ -1108,6 +1113,22 @@ async function cmArtist(cmId, env) {
     const v = [].concat(fields).map(f => st[f]).find(x => x !== null && x !== undefined && x !== '');
     const n = Number(v);
     if (Number.isFinite(n) && n >= 0) out.followers[key] = { count: Math.round(n), asof: today, source: 'Chartmetric' };
+  }
+  // Growth: the latest time-series point carries 7- and 30-day diffs. Only asked
+  // for platforms the artist actually has, to keep the call count down.
+  for (const [key, [src, field]] of Object.entries(CM_SERIES)) {
+    if (!out.followers[key]) continue;
+    try {
+      const pts = (await cmGet(`/artist/${cmId}/stat/${src}?field=${field}&latest=true`, env)).obj?.[field] || [];
+      const pt = pts[pts.length - 1];
+      if (!pt) continue;
+      const num = x => (x === null || x === undefined || x === '' || !Number.isFinite(Number(x))) ? null : Number(x);
+      Object.assign(out.followers[key], {
+        count: num(pt.value) ?? out.followers[key].count,
+        asof: String(pt.timestp || today).slice(0, 10),
+        week: num(pt.weekly_diff), month: num(pt.monthly_diff), month_pct: num(pt.monthly_diff_percent),
+      });
+    } catch { /* growth is optional; the count from cm_statistics stands */ }
   }
   return out;
 }
