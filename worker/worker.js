@@ -86,7 +86,7 @@ export default {
 
   async scheduled(event, env, ctx) {
     ctx.waitUntil(runCalendarSync(env));
-    ctx.waitUntil(dailyTourSync(env));
+    ctx.waitUntil(scheduledChartmetric(env));
   },
 };
 
@@ -1084,12 +1084,12 @@ const CM_SERIES = { instagram: ['instagram', 'followers'], tiktok: ['tiktok', 'f
   facebook: ['facebook', 'likes'], twitter: ['twitter', 'followers'], soundcloud: ['soundcloud', 'followers'],
   spotify: ['spotify', 'followers'], spotify_listeners: ['spotify', 'listeners'], deezer: ['deezer', 'fans'] };
 
-async function cmArtist(cmId, env) {
+async function cmArtist(cmId, env, { followersOnly = false } = {}) {
   if (!/^\d+$/.test(String(cmId))) throw new HttpError(400, 'Bad Chartmetric id');
   const meta = (await cmGet(`/artist/${cmId}`, env)).obj || {};
-  const urls = (await cmGet(`/artist/${cmId}/urls`, env)).obj;
+  const urls = followersOnly ? [] : (await cmGet(`/artist/${cmId}/urls`, env)).obj;
   let related = [];
-  try { related = (await cmGet(`/artist/${cmId}/relatedartists?limit=8`, env)).obj || []; } catch { /* optional */ }
+  if (!followersOnly) try { related = (await cmGet(`/artist/${cmId}/relatedartists?limit=8`, env)).obj || []; } catch { /* optional */ }
   const today = new Date().toISOString().slice(0, 10);
   const out = { source: 'Chartmetric', chartmetric_id: String(cmId), name: meta.name || '', image_url: meta.image_url || '',
     website: '', hometown: '', genre: '', riyl: '', social: {}, dsp_links: {}, social_extra: [], followers: {} };
@@ -1190,12 +1190,14 @@ async function projectCmId(p, env) {
   return spotify ? (await cmSearch(spotify, env))[0]?.id || null : null;
 }
 
-async function pullProjectTour(projectId, user, env, strict) {
+async function pullProjectTour(projectId, user, env, strict, background = false) {
   const p = await getRow(TABLES.projects, projectId, env);
   if (!p) throw new HttpError(404, 'Project not found');
   const cmId = await projectCmId(p, env);
   if (!cmId) {
     if (strict) throw new HttpError(400, 'This artist isn’t linked to Chartmetric yet. Use “Look up online” (or add their Spotify link) first.');
+    p.data.tour_synced_at = now();      // checked; try again tomorrow
+    await patchRow(TABLES.projects, p.id, { data: JSON.stringify(p.data) }, user, env, p.updated_at);
     return { added: 0, updated: 0, skipped: true };
   }
   const events = await cmEvents(cmId, env);
@@ -1203,25 +1205,60 @@ async function pullProjectTour(projectId, user, env, strict) {
   p.data.tour = rows;
   p.data.chartmetric_id = String(cmId);
   p.data.tour_synced_at = now();
-  await patchRow(TABLES.projects, p.id, { data: JSON.stringify(p.data) }, user, env, (added || updated) ? now() : p.updated_at);
+  await patchRow(TABLES.projects, p.id, { data: JSON.stringify(p.data) }, user, env, (added || updated) && !background ? now() : p.updated_at);
   return { added, updated, found: events.length };
 }
 
-// Once a day (first cron run after 09:00 UTC) refresh tour dates on current projects.
-async function dailyTourSync(env) {
+// Scheduled Chartmetric refreshes for current projects (release date within the
+// last 120 days, or none yet). Each 5-minute cron run handles a small batch, so a
+// run never exceeds Cloudflare's per-invocation request limit:
+//   tour dates      daily, from 09:00 UTC   (5 projects per run, 2 requests each)
+//   follower counts weekly, from Monday 09:00 UTC (2 projects per run, ~10 requests each)
+async function scheduledChartmetric(env) {
   if (!env.CHARTMETRIC_REFRESH_TOKEN) return;
-  const day = new Date().toISOString().slice(0, 10);
-  if (new Date().getUTCHours() < 9) return;
-  const last = await env.DB.prepare("SELECT value FROM sync_state WHERE key = 'tour_sync_day'").first();
-  if (last?.value === day) return;
-  await env.DB.prepare("INSERT INTO sync_state (key, value) VALUES ('tour_sync_day', ?1) ON CONFLICT(key) DO UPDATE SET value = ?1").bind(day).run();
-  const projects = (await env.DB.prepare('SELECT id FROM projects WHERE release_date IS NULL OR release_date >= ?').bind(addDays(day, -120)).all()).results;
-  let added = 0, updated = 0;
-  for (const { id } of projects) {
-    try { const r = await pullProjectTour(id, { email: 'tour-sync' }, env, false); added += r.added; updated += r.updated; }
+  const nowD = new Date();
+  const today = nowD.toISOString().slice(0, 10);
+  const dayStart = nowD.getUTCHours() >= 9 ? today + 'T09:00:00.000Z' : addDays(today, -1) + 'T09:00:00.000Z';
+  const monday = addDays(today, -((nowD.getUTCDay() + 6) % 7)) + 'T09:00:00.000Z';
+  const current = `(release_date IS NULL OR release_date >= '${addDays(today, -120)}')`;
+  const sys = { email: 'chartmetric-sync' };
+
+  const due = async (field, since, limit) => (await env.DB.prepare(
+    `SELECT id FROM projects WHERE ${current} AND (json_extract(data, '$.${field}') IS NULL OR json_extract(data, '$.${field}') < ?) ORDER BY release_date LIMIT ${limit}`)
+    .bind(since).all()).results;
+
+  for (const { id } of await due('tour_synced_at', dayStart, 5)) {
+    try { await pullProjectTour(id, sys, env, false, true); }
     catch (e) { await logSync(env, 'warn', `tour sync ${id}: ${e.message}`); }
   }
-  await logSync(env, 'info', `daily tour sync: ${projects.length} projects, ${added} shows added, ${updated} updated`);
+  if (nowD.toISOString() >= monday) {
+    for (const { id } of await due('followers_synced_at', monday, 2)) {
+      try { await refreshProjectFollowers(id, sys, env); }
+      catch (e) { await logSync(env, 'warn', `follower sync ${id}: ${e.message}`); }
+    }
+  }
+}
+
+// Latest follower counts + 30-day growth for one project, saved to the project and
+// learned into the artist profile. The previous reading is kept for comparison.
+async function refreshProjectFollowers(projectId, user, env) {
+  const p = await getRow(TABLES.projects, projectId, env);
+  if (!p) return;
+  const cmId = await projectCmId(p, env);
+  p.data.followers_synced_at = now();
+  if (cmId) {
+    const fresh = (await cmArtist(cmId, env, { followersOnly: true })).followers;
+    p.data.followers ||= {};
+    for (const [k, f] of Object.entries(fresh)) {
+      const old = p.data.followers[k];
+      const prev = old && old.asof && old.asof !== f.asof ? { count: old.count, asof: old.asof } : old?.prev;
+      p.data.followers[k] = { ...f, ...(prev ? { prev } : {}) };
+    }
+    p.data.chartmetric_id = String(cmId);
+  }
+  // Background data: keep updated_at so anyone editing the project isn't hit with a save conflict.
+  await patchRow(TABLES.projects, p.id, { data: JSON.stringify(p.data) }, user, env, p.updated_at);
+  if (cmId) await learnFromProject(p.id, user, env);
 }
 
 // ── LINK INFO (press paste) ──────────────────────────────────

@@ -397,14 +397,14 @@
     function pressSections() {
       const songs = [...new Set([...d.tracks.map(t => t.song), ...String(d.focus_tracks || '').split(',').map(x => x.trim())].filter(Boolean))];
       const typeLabel = t => ({ Single: 'Single', Album: 'Album', Tour: 'Tour', Other: 'Other' })[t] || 'Other';
-      const box = (sc, i) => `<div class="form-section" style="margin:0 0 10px 0;background:#fff">
-        <h3 style="text-transform:none;letter-spacing:0;gap:8px">
+      const box = (sc, i) => `<div class="form-section" style="margin:0 0 6px 0;background:#fff">
+        <h3 style="text-transform:none;letter-spacing:0;gap:6px;padding:5px 8px">
           <select data-ps="${i}" data-psf="type"${dis} style="font-weight:600">${FP.options(['Single', 'Album', 'Tour', 'Other'], sc.type, { blank: false })}</select>
           <input type="text" data-ps="${i}" data-psf="name" value="${esc(sc.name)}"${sc.type === 'Single' ? ' list="dl-singles" placeholder="Single name"' : sc.type === 'Album' ? ' placeholder="Album title"' : sc.type === 'Tour' ? ' placeholder="e.g. Fall 2026 US tour"' : ' placeholder="Section name"'}${dis} style="flex:1">
           <span class="hint">${sc.items.filter(x => x.outlet || x.url).length} item${sc.items.length === 1 ? '' : 's'}</span>
           ${ro ? '' : `<button class="btn-ghost btn-sm" data-ps-paste="${i}" title="Paste several links into this section">Paste links</button><button class="btn-ghost btn-sm" data-ps-del="${i}" title="Remove section">✕</button>`}
         </h3>
-        <div class="fs-body" style="padding:8px 10px"><div class="rep"><table><thead><tr><th style="width:200px">Publication</th><th>Link</th><th>Notes</th><th></th></tr></thead><tbody>
+        <div class="fs-body" style="padding:4px 8px 6px"><div class="rep compact"><table><thead><tr><th style="width:200px">Publication</th><th>Link</th><th>Notes</th><th></th></tr></thead><tbody>
           ${sc.items.map((x, j) => { const at = `data-ps="${i}" data-pi="${j}"${dis}`; return `<tr>
             <td><input type="text" ${at} data-pk="outlet" value="${esc(x.outlet)}" placeholder="e.g. Pitchfork"></td>
             <td><div style="display:flex;gap:4px;align-items:center"><input type="url" ${at} data-pk="url" value="${esc(x.url)}" style="flex:1">${openLink(x.url)}</div></td>
@@ -420,22 +420,32 @@
     // Tour rows: editable date/city/venue/notes, plus an Announced marker. Pulled
     // (public) shows are always announced; manual ones flip when a listing appears.
     function tourTable() {
-      const rows = d.tour;
-      return `<div class="rep"><table><thead><tr><th style="width:150px">Date</th><th>City</th><th>Venue</th><th>Notes</th><th style="width:150px">Status</th><th></th></tr></thead><tbody>
-        ${rows.map((r, i) => {
-          const a = `data-rep="tour" data-i="${i}"${dis}`;
-          const status = r.cancelled ? '<span class="badge s-cancelled">Cancelled</span>'
-            : r.source === 'chartmetric' ? '<span class="badge s-confirmed">Announced</span>'
-            : `<label style="display:flex;gap:4px;align-items:center;white-space:nowrap"><input type="checkbox" data-tour-ann="${i}"${r.announced ? ' checked' : ''}${dis}> ${r.announced ? '<span class="badge s-confirmed">Announced</span>' : '<span class="badge s-planning">Not announced</span>'}</label>`;
-          return `<tr${r.cancelled ? ' style="opacity:.6"' : ''}>
-            <td><input type="date" ${a} data-k="date" value="${esc(r.date)}"></td>
-            <td><input type="text" ${a} data-k="city" value="${esc(r.city)}"></td>
-            <td><div style="display:flex;gap:4px;align-items:center"><input type="text" ${a} data-k="venue" value="${esc(r.venue)}" style="flex:1">${FP.safeUrl(r.ticket_url) ? `<a href="${esc(r.ticket_url)}" target="_blank" rel="noopener" title="Tickets">🎟</a>` : ''}</div></td>
-            <td><input type="text" ${a} data-k="notes" value="${esc(r.notes)}"></td>
-            <td>${status}</td>
-            <td style="width:30px">${ro ? '' : `<button class="btn-ghost btn-sm" data-del="tour" data-i="${i}" title="Remove">✕</button>`}</td></tr>`;
-        }).join('')}</tbody></table>${ro ? '' : '<button class="btn btn-sm add" data-add="tour">+ Add date</button>'}</div>
-        ${rows.length ? `<p class="hint" style="margin-top:6px">${rows.filter(r => !r.announced && !r.cancelled).length} not announced · ${rows.filter(r => r.announced && !r.cancelled).length} announced${rows.some(r => r.cancelled) ? ` · ${rows.filter(r => r.cancelled).length} cancelled` : ''}</p>` : ''}`;
+      const today = FP.today();
+      const isPast = r => r.date && r.date < today;
+      const row = (r, i) => {
+        const a = `data-rep="tour" data-i="${i}"${dis}`;
+        const status = r.cancelled ? '<span class="badge s-cancelled">Cancelled</span>'
+          : isPast(r) ? '<span class="badge">Played</span>'
+          : r.source === 'chartmetric' ? '<span class="badge s-confirmed">Announced</span>'
+          : `<label style="display:flex;gap:4px;align-items:center;white-space:nowrap"><input type="checkbox" data-tour-ann="${i}"${r.announced ? ' checked' : ''}${dis}> ${r.announced ? '<span class="badge s-confirmed">Announced</span>' : '<span class="badge s-planning">Not announced</span>'}</label>`;
+        return `<tr${r.cancelled ? ' style="opacity:.6"' : ''}>
+          <td><input type="date" ${a} data-k="date" value="${esc(r.date)}"></td>
+          <td><input type="text" ${a} data-k="city" value="${esc(r.city)}"></td>
+          <td><div style="display:flex;gap:4px;align-items:center"><input type="text" ${a} data-k="venue" value="${esc(r.venue)}" style="flex:1">${FP.safeUrl(r.ticket_url) ? `<a href="${esc(r.ticket_url)}" target="_blank" rel="noopener" title="Tickets">🎟</a>` : ''}</div></td>
+          <td><input type="text" ${a} data-k="notes" value="${esc(r.notes)}"></td>
+          <td>${status}</td>
+          <td style="width:30px">${ro ? '' : `<button class="btn-ghost btn-sm" data-del="tour" data-i="${i}" title="Remove">✕</button>`}</td></tr>`;
+      };
+      const head = '<thead><tr><th style="width:150px">Date</th><th>City</th><th>Venue</th><th>Notes</th><th style="width:150px">Status</th><th></th></tr></thead>';
+      // Keep each row's index into d.tour so edits land on the right show.
+      const all = d.tour.map((r, i) => ({ r, i }));
+      const upcoming = all.filter(x => !isPast(x.r)), past = all.filter(x => isPast(x.r)).reverse();
+      const live = upcoming.filter(x => !x.r.cancelled);
+      return `<div class="rep compact"><table>${head}<tbody>${upcoming.map(x => row(x.r, x.i)).join('') || `<tr><td colspan="6" class="hint" style="padding:6px">No upcoming dates.</td></tr>`}</tbody></table>
+          ${ro ? '' : '<button class="btn btn-sm add" data-add="tour">+ Add date</button>'}</div>
+        ${upcoming.length ? `<p class="hint" style="margin-top:4px">${live.filter(x => !x.r.announced).length} not announced · ${live.filter(x => x.r.announced).length} announced${upcoming.some(x => x.r.cancelled) ? ` · ${upcoming.filter(x => x.r.cancelled).length} cancelled` : ''}</p>` : ''}
+        ${past.length ? `<details style="margin-top:8px"><summary class="hint" style="cursor:pointer;font-weight:600">Past tour dates (${past.length})</summary>
+          <div class="rep compact" style="margin-top:4px"><table>${head}<tbody>${past.map(x => row(x.r, x.i)).join('')}</tbody></table></div></details>` : ''}`;
     }
 
     function rep(name) {
@@ -453,7 +463,7 @@
         return `<input type="text" ${a} value="${esc(row[k])}"${ph}>`;
       };
       if (cfg.hideEmpty && !list.length) return ro ? '' : `<button class="btn btn-sm" data-add="${name}">${cfg.addLabel}</button>`;
-      return `<div class="rep" data-rep-box="${name}"><table>
+      return `<div class="rep compact" data-rep-box="${name}"><table>
         <thead><tr>${cfg.cols.map(c => `<th style="${COL_W[c[0]] || ''}">${c[1]}</th>`).join('')}<th></th></tr></thead>
         <tbody>${list.map((row, i) => `<tr>${cfg.cols.map(c => `<td>${cellInput(row, i, c)}</td>`).join('')}
           <td style="width:30px">${ro ? '' : `<button class="btn-ghost btn-sm" data-del="${name}" data-i="${i}" title="Remove">✕</button>`}</td></tr>`).join('')}</tbody>
@@ -1011,7 +1021,7 @@
       ${block('Assets', assets.length ? para(assets.map(([n, u]) => a(u, n)).join(dot)) : '')}
       ${block('Socials &amp; streaming', statsTable)}
       ${block('Contacts', lines(contacts))}
-      ${block('Tour dates', tourLines(d.tour))}`;
+      ${block('Tour dates', tourLines(d.tour.filter(t => !t.date || t.date >= FP.today())))}`;
 
     // ── PAGE 2+: PROJECT DETAILS ──
     const tcols = [['num', '#'], ['song', 'Song'], ['length', 'Length'], ['isrc', 'ISRC'], ['writers', 'Writers'], ['publishers', 'Publishers']].filter(([c]) => c === 'num' || tracks.some(t => has(t[c])));
@@ -1035,6 +1045,8 @@
       section('Syncs', has(d.syncs) ? para(linkify(d.syncs)) : ''),
       section('Recording details', has(d.recording) ? para(linkify(d.recording)) : ''),
       section('Credits', credits),
+      section('Past tour dates', lines(d.tour.filter(t => t.date && t.date < FP.today()).sort((x, y) => y.date.localeCompare(x.date)).map(t =>
+        `<b>${esc(FP.fmtDate(t.date, { month: 'short', day: 'numeric', year: 'numeric' }))}</b>&nbsp;&nbsp;${esc(t.city || '')}${t.venue ? ' — ' + esc(t.venue) : ''}${t.notes ? dot + esc(t.notes) : ''}${t.cancelled ? ' ' + muted('(cancelled)') : ''}`))),
     ].join('');
 
     const updated = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });

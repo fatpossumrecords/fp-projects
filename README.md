@@ -97,7 +97,7 @@ last.fm/api/account/create and run `npx wrangler secret put LASTFM_API_KEY` in `
 
 With Chartmetric connected, **Look up online** searches Chartmetric first. It fills website, socials, DSP links,
 hometown, genre, RIYL ("fans also like") and follower counts for every platform. MusicBrainz stays available as a
-fallback. **Update follower counts** refreshes all platforms at once. Put the account's API refresh token in:
+fallback. **Update follower counts** refreshes all platforms at once. Current projects (release date within the last 120 days, or none yet) also refresh on their own: tour dates daily and follower counts weekly, from Monday 09:00 UTC. Put the account's API refresh token in:
 
 - local: `worker/.dev.vars` → `CHARTMETRIC_REFRESH_TOKEN=...` (then restart `npm run dev`)
 - live: `npx wrangler secret put CHARTMETRIC_REFRESH_TOKEN`

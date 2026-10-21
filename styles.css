@@ -245,3 +245,13 @@ button.chip:hover { background: var(--surface2); }
 a.btn, a.btn-primary, a.btn-ghost { text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
 a.btn { color: var(--text); }
 a.btn-primary { color: var(--surface); }
+
+/* ── Compact lists in the project form (tour, press, team, tracks…) ── */
+.rep.compact th { padding: 2px 4px; font-size: 9.5px; }
+.rep.compact td { padding: 1px 3px 1px 0; }
+.rep.compact td input, .rep.compact td select { padding: 3px 6px; font-size: 12px; }
+.rep.compact .badge { font-size: 10px; padding: 0 6px; }
+.rep.compact .add { margin-top: 4px; }
+.form-section > .fs-body { padding: 10px 12px; }
+.form-section > h3 { padding: 8px 12px; }
+.form-section { margin-bottom: 12px; }

@@ -175,5 +175,15 @@ ok(t1.length === 4 && t1.find(t => t.city.startsWith('Atlanta')).cancelled === t
 const pull2 = await A('POST', `/api/projects/${tp3.id}/tour/pull`);
 ok(pull2.project.data.tour.length === 4 && pull2.added === 0, 'pulling again adds no duplicates');
 
+// 12. scheduled Chartmetric refresh (runs as the cron would)
+const tp4 = await A('POST', '/api/projects', { artist: 'Nina Sky', title: 'Weekly', release_date: '2027-02-01', data: { chartmetric_id: '2000', followers: { instagram: { count: 50000, asof: '2026-09-01' } } } });
+await worker.scheduled({}, env, ctx); while (waits.length) await waits.shift();
+const tp4b = await A('GET', '/api/projects/' + tp4.id);
+ok(tp4b.data.followers.instagram.count === 52400 && tp4b.data.followers.instagram.prev?.count === 50000 && tp4b.data.followers_synced_at, 'weekly refresh updates follower counts and keeps the previous reading');
+ok(tp4b.data.tour?.length === 3 && tp4b.data.tour_synced_at, 'scheduled run also pulls tour dates');
+ok(tp4b.updated_at === tp4.updated_at, 'background refresh does not bump updated_at (no save conflicts for editors)');
+await worker.scheduled({}, env, ctx); while (waits.length) await waits.shift();
+ok((await A('GET', '/api/projects/' + tp4.id)).data.followers_synced_at === tp4b.data.followers_synced_at, 'a second run the same week skips projects already refreshed');
+
 const log = await A('GET', '/api/sync/log');
 ok(!log.some(l => l.level === 'error'), 'no sync errors logged' + (log.filter(l => l.level === 'error').map(l => ' | ' + l.msg).join('')));
