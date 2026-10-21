@@ -264,6 +264,11 @@
         ${FP.field('Hometown', inp('data.hometown'))}
         ${linkField('data.website', 'Official website')}
       </div>`,
+      onesheet: () => `<div class="grid">
+        ${FP.field('About this release', ta('data.about', 5, 'The short pitch: what this record is and why it matters. This leads the first page of the Google Doc.'), 'wide')}
+        ${FP.field('Selling points', ta('data.selling_points', 4, 'One per line, e.g.\nFirst album in five years\nProduced by …\nNorth American tour in March'), 'wide')}
+        ${FP.field('Focus tracks', inp('data.focus_tracks', 'text', ' placeholder="e.g. Bird Songs For Atomic Skies, Eleven Saints"'), 'wide')}
+      </div><p class="hint" style="margin-top:6px">These make up the one-sheet on page 1 of the Google Doc, with RIYL, press quotes, formats, tracklist and tour dates.</p>`,
       social: () => `${linkTable('social', SOCIALS)}<div style="margin-top:10px">${rep('social_extra')}</div>
         ${ro ? '' : FP.state.sources?.chartmetric
           ? `<p style="margin-top:10px"><button class="btn btn-sm" data-refresh-followers>Update follower counts from Chartmetric</button> <span class="hint">${d.chartmetric_id ? 'Linked to Chartmetric.' : 'Uses the Spotify link to find the artist, or run “Look up online” first.'}</span></p>`
@@ -299,7 +304,7 @@
         ${tourTable()}`,
       recording: () => ta('data.recording', 4),
     };
-    const TITLES = [['overview', 'Overview'], ['social', 'Social'], ['dsps', 'DSPs'], ['riyl', 'RIYL'], ['smart_links', 'Smart Links'], ['assets', 'Assets'],
+    const TITLES = [['overview', 'Overview'], ['onesheet', 'One-sheet'], ['social', 'Social'], ['dsps', 'DSPs'], ['riyl', 'RIYL'], ['smart_links', 'Smart Links'], ['assets', 'Assets'],
       ['team', 'Team'], ['formats', 'Formats'], ['timeline', 'Timeline'], ['tracks', 'Tracklisting &amp; Credits'], ['marketing', 'Retail &amp; Digital Marketing'],
       ['playlists', 'Digital Playlisting'], ['press', 'Press'], ['radio', 'Radio'], ['syncs', 'Syncs'], ['tour', 'Tour Dates'], ['recording', 'Recording Details']];
 
@@ -692,9 +697,27 @@
   // Google converts this HTML into a Doc. h1/h2 become real headings (they show
   // in the doc outline). Avoid borders on headings: they turn into stray rule
   // lines that also break the next list. Empty fields and sections are left out.
+  // Logo is served from the live site so Google can fetch it while building the Doc.
+  const DOC_LOGO = 'https://fatpossumrecords.github.io/fp-projects/fp-logo.png';
+
+  // Dropbox share links → direct image links Google can embed (album art on page 1).
+  function imageUrl(u) {
+    if (!FP.safeUrl(u)) return '';
+    try {
+      const url = new URL(u);
+      if (/dropbox\.com$/.test(url.hostname.replace(/^www\./, ''))) {
+        if (url.pathname.includes('/fo/')) return '';          // a folder, not an image
+        url.searchParams.delete('dl'); url.searchParams.set('raw', '1');
+        return url.href;
+      }
+      return /\.(jpe?g|png|gif|webp)$/i.test(url.pathname) ? u : '';
+    } catch { return ''; }
+  }
+
   function buildDocHtml(p) {
-    // Reads like a document, not a form: short summary lines, inline link
-    // lists and simple lists. The only table left is track credits, kept light.
+    // Page 1 is a one-sheet (pitch, release facts, tracklist, tour, links, contacts).
+    // Page 2 onward holds the working details. Layout columns are borderless tables,
+    // because that's the only multi-column layout Google keeps when converting HTML.
     const d = normalize(p.data);
     const C = { ink: '#1c1a16', muted: '#7a7468', accent: '#b83228', rule: '#e4e0d8' };
     const has = v => !blank(v);
@@ -703,72 +726,99 @@
     const a = (url, label) => FP.safeUrl(url) ? `<a href="${esc(url)}">${esc(label || shortUrl(url))}</a>` : esc(label || url || '');
     const muted = s => `<span style="color:${C.muted}">${s}</span>`;
     const dot = ` ${muted('·')} `;
-    const P = 'margin:0 0 4pt 0;line-height:1.35';
-    const para = html => `<p style="${P}">${html}</p>`;
-    const lines = list => list.filter(Boolean).map(para).join('');
-    const h2 = t => `<h2 style="font-size:12pt;font-weight:bold;color:${C.accent};margin:16pt 0 5pt 0">${t}</h2>`;
-    const section = (title, body) => body ? h2(title) + body : '';
+    const para = (html, extra = '') => `<p style="margin:0 0 3pt 0;line-height:1.35;${extra}">${html}</p>`;
+    const lines = list => list.filter(Boolean).map(x => para(x)).join('');
+    const label = t => `<p style="margin:12pt 0 3pt 0;font-size:8pt;font-weight:bold;color:${C.accent}">${t.toUpperCase()}</p>`;
+    const block = (t, body) => body ? label(t) + body : '';
+    const h2 = t => `<h2 style="font-size:11pt;font-weight:bold;color:${C.accent};margin:16pt 0 4pt 0">${t}</h2>`;
+    const section = (t, body) => body ? h2(t) + body : '';
+    const W = 'border:1px solid #ffffff';                         // invisible table borders
+    const cols = (...cells) => `<table style="border-collapse:collapse;width:100%;${W}"><tr>${cells.map(([w, html]) =>
+      `<td style="width:${w};vertical-align:top;padding:0 16pt 0 0;${W}">${html}</td>`).join('')}</tr></table>`;
     const k = n => { n = Number(n); return n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace(/\.0$/, '') + 'M' : n >= 1e3 ? (n / 1e3).toFixed(n >= 1e4 ? 0 : 1).replace(/\.0$/, '') + 'K' : String(n); };
-    const date = (v, long) => v ? esc(FP.fmtDate(v, long ? { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' } : { month: 'short', day: 'numeric', year: 'numeric' })) : 'TBD';
     const count = key => { const f = d.followers[key]; return f?.count != null && f.count !== '' ? k(f.count) : ''; };
+    const date = v => v ? esc(FP.fmtDate(v, { month: 'short', day: 'numeric', year: 'numeric' })) : 'TBD';
+    const longDate = v => v ? esc(FP.fmtDate(v, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })) : 'Release date TBD';
 
-    // Platforms as one line of named links, follower counts in brackets.
+    const tracks = d.tracks.filter(t => has(t.song));
+    const formats = d.formats.filter(f => has(f.format) || has(f.title));
+    const art = imageUrl(d.assets.album_art) || imageUrl(d.assets.single_art);
+    const points = String(d.selling_points || '').split('\n').map(s => s.replace(/^[-•*]\s*/, '').trim()).filter(Boolean);
     const platLine = (list, group, extra, describe) => {
       const items = [...list.map(([key, l]) => FP.safeUrl(d[group][key]) ? `<b>${a(d[group][key], l)}</b>${describe(key) ? ' ' + muted('(' + describe(key) + ')') : ''}` : ''),
         ...extra.map(x => FP.safeUrl(x.url) ? `<b>${a(x.url, x.label || 'Link')}</b>` : '')].filter(Boolean);
       return items.length ? para(items.join(dot)) : '';
     };
+    const tourLines = rows => lines(rows.filter(t => has(t.date) || has(t.city)).map(t =>
+      `<b>${t.date ? esc(FP.fmtDate(t.date, { weekday: 'short', month: 'short', day: 'numeric' })) : 'TBD'}</b>&nbsp;&nbsp;${esc(t.city || '')}${t.venue ? ' — ' + (FP.safeUrl(t.ticket_url) ? a(t.ticket_url, t.venue) : esc(t.venue)) : ''}${t.notes ? dot + esc(t.notes) : ''}${
+        t.cancelled ? ' ' + muted('(cancelled)') : !t.announced ? ` <b style="color:${C.accent}">· Not announced</b>` : ''}`));
     const followerDates = Object.values(d.followers).map(f => f?.asof).filter(Boolean).sort();
-    const asofNote = followerDates.length ? para(`<span style="font-size:8.5pt;color:${C.muted}">Follower counts as of ${esc(FP.fmtDate(followerDates.at(-1)))}.</span>`) : '';
 
+    // ── PAGE 1: ONE-SHEET ──
+    const header = cols(['78%', `
+        <p style="margin:0;font-size:26pt;font-weight:bold;line-height:1.1">${esc(p.artist)}</p>
+        <p style="margin:2pt 0 6pt 0;font-size:16pt;line-height:1.2">${esc(p.title)}</p>
+        ${para([longDate(p.release_date), esc(p.label), esc(p.catalog)].filter(Boolean).join(dot), `color:${C.muted}`)}`],
+      ['22%', `<p style="margin:0;text-align:right"><img src="${DOC_LOGO}" width="88" height="82" alt="Fat Possum Records"></p>`]);
+
+    const left = [
+      block('About', has(d.about) ? String(d.about).split(/\n\s*\n/).map(x => para(linkify(x), 'margin-bottom:6pt')).join('') : ''),
+      block('Selling points', points.length ? `<ul style="margin:0 0 0 14pt;padding:0">${points.map(x => `<li style="margin:0 0 2pt 0">${linkify(x)}</li>`).join('')}</ul>` : ''),
+      block('Focus tracks', has(d.focus_tracks) ? para(`<b>${esc(d.focus_tracks)}</b>`) : ''),
+      block('Tracklist', tracks.length ? `<ol style="margin:0 0 0 16pt;padding:0">${tracks.map(t => `<li style="margin:0 0 1pt 0">${esc(t.song)}${t.length ? ' ' + muted(esc(t.length)) : ''}</li>`).join('')}</ol>` : ''),
+      block('For fans of', has(d.riyl) ? para(txt(d.riyl)) : ''),
+      block('Press', has(d.press_quotes) ? para(`<i>${linkify(d.press_quotes)}</i>`) : ''),
+    ].join('') || para(muted('Add “About this release” and selling points in the project’s One-sheet section.'));
+
+    // Date, label and cat # are already in the header.
+    const facts = [['Territory', esc(p.territory)],
+      ['Genre', esc(d.genre)], ['Hometown', esc(d.hometown)], ['Website', FP.safeUrl(d.website) ? a(d.website) : '']].filter(([, v]) => v);
+    const right = [
+      art ? `<p style="margin:0 0 8pt 0"><img src="${esc(art)}" width="200" height="200" alt="Album art"></p>` : '',
+      block('Details', facts.length ? lines(facts.map(([l, v]) => `${muted(l)}&nbsp;&nbsp;${v}`)) : ''),
+      block('Formats', lines(formats.map(f => `<b>${esc(f.format || 'Release')}</b>${f.title && f.title !== p.title ? ' — ' + esc(f.title) : ''}${f.release_date && f.release_date !== p.release_date ? dot + date(f.release_date) : ''}${f.catalog ? '<br>' + muted(esc(f.catalog) + (f.upc ? ' · UPC ' + esc(f.upc) : '')) : f.upc ? '<br>' + muted('UPC ' + esc(f.upc)) : ''}`))),
+    ].join('');
+
+    const contacts = [has(p.pm) && `<b>${esc(p.pm)}</b>${dot}Project manager`,
+      ...d.team.filter(t => has(t.name)).map(t => `<b>${esc(t.name)}</b>${t.role ? dot + esc(t.role) : ''}${t.company ? ', ' + esc(t.company) : ''}${t.email ? dot + `<a href="mailto:${esc(t.email)}">${esc(t.email)}</a>` : ''}${t.phone ? dot + esc(t.phone) : ''}`)];
+
+    const page1 = `${header}<hr style="border:none;border-top:1px solid ${C.rule};margin:8pt 0 0 0">
+      ${cols(['58%', left], ['42%', right])}
+      ${block('Tour dates', tourLines(d.tour))}
+      ${block('Links', platLine(SOCIALS, 'social', d.social_extra, count)
+        + platLine(DSPS, 'dsp_links', d.dsp_extra, key => key === 'spotify' ? [count('spotify') && count('spotify') + ' followers', count('spotify_listeners') && count('spotify_listeners') + ' monthly listeners'].filter(Boolean).join(', ') : count(key))
+        + (followerDates.length ? para(`<span style="font-size:8pt;color:${C.muted}">Follower counts as of ${esc(FP.fmtDate(followerDates.at(-1)))}.</span>`) : ''))}
+      ${block('Contacts', lines(contacts))}`;
+
+    // ── PAGE 2+: PROJECT DETAILS ──
     const timeline = [...formatTimeline(p), ...d.timeline.filter(t => has(t.item)), ...splitDatedLines(d.timeline_notes).dated]
       .sort((x, y) => String(x.date || '9').localeCompare(String(y.date || '9')));
     const otherNotes = splitDatedLines(d.timeline_notes).other;
-    const tracks = d.tracks.filter(t => has(t.song));
-    const tcols = [['num', '#'], ['song', 'Song'], ['length', 'Length'], ['isrc', 'ISRC'], ['writers', 'Writers'], ['publishers', 'Publishers']]
-      .filter(([c]) => c === 'num' || tracks.some(t => has(t[c])));
-    const cell = (html, head) => `<td style="padding:3pt 6pt 3pt 0;border-bottom:1px solid ${C.rule};vertical-align:top;font-size:9pt;${head ? `color:${C.muted};font-weight:bold;` : ''}">${html}</td>`;
-    const credits = tracks.length ? `<table style="border-collapse:collapse;width:100%;border:none">
-        <tr>${tcols.map(([, l]) => cell(esc(l), true)).join('')}</tr>
+    const tcols = [['num', '#'], ['song', 'Song'], ['length', 'Length'], ['isrc', 'ISRC'], ['writers', 'Writers'], ['publishers', 'Publishers']].filter(([c]) => c === 'num' || tracks.some(t => has(t[c])));
+    const cell = (html, head) => `<td style="padding:3pt 8pt 3pt 0;border:1px solid #ffffff;border-bottom:1px solid ${C.rule};vertical-align:top;font-size:9pt;${head ? `color:${C.muted};font-weight:bold;` : ''}">${html}</td>`;
+    const credits = tracks.length ? `<table style="border-collapse:collapse;width:100%;${W}"><tr>${tcols.map(([, l]) => cell(esc(l), true)).join('')}</tr>
         ${tracks.map((t, i) => `<tr>${tcols.map(([c]) => cell(c === 'song' ? `<b>${esc(t.song)}</b>` : esc(c === 'num' ? (t.vol || '') + (t.num || i + 1) : t[c] || ''))).join('')}</tr>`).join('')}</table>` : '';
+    const assets = [['Project folder', d.assets.folder], ...ASSETS.map(([key, lab]) => [lab, d.assets[key]])].filter(([, u]) => FP.safeUrl(u));
+    const smart = d.smart_links.filter(x => FP.safeUrl(x.url));
+
+    const page2 = [
+      section('Timeline', lines(timeline.map(t => `<b>${date(t.date)}</b>&nbsp;&nbsp;${esc(t.item)}`)) + (otherNotes.length ? para(muted(linkify(otherNotes.join('\n')))) : '')),
+      section('Assets', assets.length ? para(assets.map(([n, u]) => a(u, n)).join(dot)) : ''),
+      section('Smart links', smart.length ? para(smart.map(x => a(x.url, x.label || 'Smart link')).join(dot)) : ''),
+      section('Retail &amp; digital marketing', lines([has(d.retail) && `<b>Retail.</b> ${linkify(d.retail)}`, has(d.digital) && `<b>Digital.</b> ${linkify(d.digital)}`])),
+      section('Digital playlisting', lines(d.playlists.filter(x => has(x.name)).map(x => `${x.dsp ? esc(x.dsp) + dot : ''}<b>${a(x.url, x.name)}</b>${x.status ? ' ' + muted('(' + esc(x.status) + ')') : ''}${x.notes ? dot + esc(x.notes) : ''}`))),
+      section('Press', lines([has(d.press_links) && `<b>Links.</b> ${linkify(d.press_links)}`, has(d.press_previous) && `<b>Previous press.</b> ${linkify(d.press_previous)}`])),
+      section('Radio', has(d.radio) ? para(linkify(d.radio)) : ''),
+      section('Syncs', has(d.syncs) ? para(linkify(d.syncs)) : ''),
+      section('Recording details', has(d.recording) ? para(linkify(d.recording)) : ''),
+      section('Credits', credits),
+    ].join('');
 
     const updated = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-    const summary = [p.release_date ? date(p.release_date, true) : 'Release date TBD', esc(p.label), esc(p.catalog), esc(p.territory)].filter(Boolean);
-    const meta = [has(d.genre) && esc(d.genre), has(d.hometown) && esc(d.hometown), FP.safeUrl(d.website) && a(d.website), has(p.pm) && 'PM: ' + esc(p.pm), has(p.status) && esc(p.status)].filter(Boolean);
-
-    return `<html><body style="font-family:Arial;font-size:10pt;color:${C.ink};line-height:1.35">
-      <p style="margin:0 0 2pt 0;font-size:8pt;color:${C.muted}">FAT POSSUM RECORDS · PROJECT DOCUMENT</p>
-      <h1 style="font-size:20pt;font-weight:bold;margin:0">${esc(p.name || p.title)}</h1>
-      <p style="margin:0 0 8pt 0;font-size:13pt;color:${C.muted}">${esc(p.artist)}${has(p.name) && p.name !== p.title ? ' — ' + esc(p.title) : ''}</p>
-      ${para(summary.join(dot))}
-      ${meta.length ? para(muted(meta.join(' · '))) : ''}
-
-      ${section('Social', platLine(SOCIALS, 'social', d.social_extra, count) + asofNote)}
-      ${section('DSPs', platLine(DSPS, 'dsp_links', d.dsp_extra, key => key === 'spotify'
-        ? [count('spotify') && count('spotify') + ' followers', count('spotify_listeners') && count('spotify_listeners') + ' monthly listeners'].filter(Boolean).join(', ')
-        : count(key)))}
-      ${section('RIYL', has(d.riyl) ? para(txt(d.riyl)) : '')}
-      ${section('Smart Links', (() => { const l = d.smart_links.filter(x => FP.safeUrl(x.url)); return l.length ? para(l.map(x => a(x.url, x.label || 'Smart link')).join(dot)) : ''; })())}
-      ${section('Assets', (() => {
-        const l = [['Project folder', d.assets.folder], ...ASSETS.map(([key, lab]) => [lab, d.assets[key]])].filter(([, u]) => FP.safeUrl(u));
-        return l.length ? para(l.map(([n, u]) => a(u, n)).join(dot)) : '';
-      })())}
-      ${section('Team', lines(d.team.filter(t => has(t.name)).map(t =>
-        `<b>${esc(t.name)}</b>${t.role ? dot + esc(t.role) : ''}${t.company ? ', ' + esc(t.company) : ''}${t.email ? dot + `<a href="mailto:${esc(t.email)}">${esc(t.email)}</a>` : ''}${t.phone ? dot + esc(t.phone) : ''}`)))}
-      ${section('Formats', lines(d.formats.filter(f => has(f.format) || has(f.title)).map(f =>
-        `<b>${esc(f.format || 'Release')}</b>${f.title && f.title !== p.title ? ' — ' + esc(f.title) : ''}${dot}${date(f.release_date || p.release_date)}${f.catalog ? dot + esc(f.catalog) : ''}${f.upc ? dot + 'UPC ' + esc(f.upc) : ''}`)))}
-      ${section('Timeline', lines(timeline.map(t => `<b>${date(t.date)}</b>&nbsp;&nbsp;${esc(t.item)}`)) + (otherNotes.length ? para(muted(linkify(otherNotes.join('\n')))) : ''))}
-      ${section('Tracklisting &amp; Credits', credits)}
-      ${section('Retail &amp; Digital Marketing', lines([has(d.retail) && `<b>Retail.</b> ${linkify(d.retail)}`, has(d.digital) && `<b>Digital.</b> ${linkify(d.digital)}`]))}
-      ${section('Digital Playlisting', lines(d.playlists.filter(x => has(x.name)).map(x =>
-        `${x.dsp ? esc(x.dsp) + dot : ''}<b>${a(x.url, x.name)}</b>${x.status ? ' ' + muted('(' + esc(x.status) + ')') : ''}${x.notes ? dot + esc(x.notes) : ''}`)))}
-      ${section('Press', lines([has(d.press_quotes) && `<i>${linkify(d.press_quotes)}</i>`, has(d.press_links) && `<b>Links.</b> ${linkify(d.press_links)}`, has(d.press_previous) && `<b>Previous press.</b> ${linkify(d.press_previous)}`]))}
-      ${section('Radio', has(d.radio) ? para(linkify(d.radio)) : '')}
-      ${section('Syncs', has(d.syncs) ? para(linkify(d.syncs)) : '')}
-      ${section('Tour Dates', lines(d.tour.filter(t => has(t.date) || has(t.city)).map(t =>
-        `<b>${t.date ? esc(FP.fmtDate(t.date, { weekday: 'short', month: 'short', day: 'numeric' })) : 'TBD'}</b>&nbsp;&nbsp;${esc(t.city || '')}${t.venue ? ' — ' + (FP.safeUrl(t.ticket_url) ? a(t.ticket_url, t.venue) : esc(t.venue)) : ''}${t.notes ? dot + esc(t.notes) : ''}${
-          t.cancelled ? ' ' + muted('(cancelled)') : !t.announced ? ` <b style="color:${C.accent}">· Not announced</b>` : ''}`)))}
-      ${section('Recording Details', has(d.recording) ? para(linkify(d.recording)) : '')}
+    return `<html><body style="font-family:Arial;font-size:9.5pt;color:${C.ink};line-height:1.35">
+      ${page1}
+      ${page2 ? `<p style="page-break-before:always;margin:0 0 2pt 0;font-size:8pt;color:${C.muted}">${esc(p.artist).toUpperCase()} · ${esc(p.title).toUpperCase()}</p>
+        <h1 style="font-size:16pt;font-weight:bold;margin:0 0 4pt 0">Project details</h1>${page2}` : ''}
       <p style="margin:24pt 0 0 0;font-size:7.5pt;color:${C.muted}">Updated ${updated} from the Fat Possum project system. Edit the project in the app and click “Update Google Doc” to change this document; direct edits are replaced on the next update.</p>
     </body></html>`;
   }
