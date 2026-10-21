@@ -1,0 +1,2 @@
+SESSION_SECRET=dev-only-secret-change-me
+DEV_BYPASS_EMAIL=patrick@fatpossum.com

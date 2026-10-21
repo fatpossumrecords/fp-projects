@@ -1,0 +1,20 @@
+{
+  "name": "fp-projects-api",
+  "private": true,
+  "scripts": {
+    "dev": "wrangler dev --port 8787",
+    "db:init:local": "wrangler d1 execute fp-projects --local --file=schema.sql && wrangler d1 execute fp-projects --local --file=seed.sql",
+    "db:init:remote": "wrangler d1 execute fp-projects --remote --file=schema.sql && wrangler d1 execute fp-projects --remote --file=seed.sql",
+    "deploy": "wrangler deploy",
+    "test": "node test-sync.mjs",
+    "db:migrate:local": "wrangler d1 execute fp-projects --local --file=migrations/0002_profiles_contacts_playlists.sql && wrangler d1 execute fp-projects --local --file=migrations/0003_release_kind.sql && wrangler d1 execute fp-projects --local --file=migrations/0004_post_platforms.sql",
+    "db:migrate:remote": "wrangler d1 execute fp-projects --remote --file=migrations/0002_profiles_contacts_playlists.sql && wrangler d1 execute fp-projects --remote --file=migrations/0003_release_kind.sql && wrangler d1 execute fp-projects --remote --file=migrations/0004_post_platforms.sql"
+  },
+  "devDependencies": {
+    "wrangler": "4.20.0"
+  },
+  "allowScripts": {
+    "workerd@1.20250604.0": true
+  },
+  "type": "module"
+}

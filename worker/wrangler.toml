@@ -1,0 +1,26 @@
+name = "fp-projects-api"
+main = "worker.js"
+compatibility_date = "2024-09-23"
+
+[triggers]
+crons = ["*/5 * * * *"]   # Google Calendar → app sync
+
+[[d1_databases]]
+binding = "DB"
+database_name = "fp-projects"
+database_id = "REPLACE_WITH_ID_FROM_wrangler_d1_create"
+
+[vars]
+GOOGLE_CLIENT_ID = "955463970238-o8p7ujrhusedtkavkskjhjlh87gr1844.apps.googleusercontent.com"
+ALLOWED_DOMAIN   = "fatpossum.com"
+ADMIN_EMAIL      = "patrick@fatpossum.com"
+ALLOWED_ORIGINS  = "https://fatpossumrecords.github.io,http://localhost:8080"
+APP_URL          = "https://fatpossumrecords.github.io/fp-projects/"
+# Calendar IDs from Google Calendar → Settings → Integrate calendar → Calendar ID
+CAL_RELEASES_ID  = ""
+CAL_INTERNAL_ID  = ""
+
+# Secrets (npx wrangler secret put NAME):
+#   SESSION_SECRET   any long random string
+#   GOOGLE_SA_EMAIL  service account email
+#   GOOGLE_SA_KEY    service account private_key (the -----BEGIN PRIVATE KEY----- block)

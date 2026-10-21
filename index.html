@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Fat Possum — Projects</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg" />
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login-screen" class="login-screen hidden">
+  <div class="login-box">
+    <div class="login-logo">
+      <img src="FP-Logo_Submark-Black.jpg" alt="Fat Possum Records" />
+      <h1>Fat Possum Records</h1>
+      <p>Project Management</p>
+    </div>
+    <div id="g-signin"></div>
+    <button id="dev-login" class="btn-ghost hidden" onclick="FP.devLogin()">Local dev sign-in</button>
+    <p id="login-error" class="login-error hidden"></p>
+  </div>
+</div>
+
+<!-- APP -->
+<div id="app" class="hidden">
+  <aside id="sidebar">
+    <div class="brand">
+      <img src="FP-Logo_Submark-Black.jpg" alt="" />
+      <div><div class="brand-name">Fat Possum</div><div class="brand-sub">Projects</div></div>
+    </div>
+    <nav>
+      <a href="#/releases" data-nav="releases">Release Schedule</a>
+      <a href="#/projects" data-nav="projects">Projects</a>
+      <a href="#/dates" data-nav="dates">Internal Dates</a>
+      <a href="#/social" data-nav="social">Social Schedule</a>
+      <a href="#/settings" data-nav="settings">Settings</a>
+    </nav>
+    <div class="sidebar-foot">
+      <div id="me" class="me"></div>
+      <button class="btn-ghost" onclick="FP.logout()">Sign out</button>
+    </div>
+  </aside>
+  <main id="main"></main>
+</div>
+
+<div id="modal-root"></div>
+<div id="toast-root"></div>
+
+<script src="app.js"></script>
+<script src="releases.js"></script>
+<script src="project-info.js"></script>
+<script src="projects.js"></script>
+<script src="social.js"></script>
+<script src="settings.js"></script>
+<script>FP.boot();</script>
+</body>
+</html>
