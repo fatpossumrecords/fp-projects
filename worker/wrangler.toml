@@ -8,7 +8,7 @@ crons = ["*/5 * * * *"]   # Google Calendar → app sync
 [[d1_databases]]
 binding = "DB"
 database_name = "fp-projects"
-database_id = "REPLACE_WITH_ID_FROM_wrangler_d1_create"
+database_id = "00f25397-4b78-4042-b642-ca84ae8c0434"
 
 [vars]
 GOOGLE_CLIENT_ID = "955463970238-o8p7ujrhusedtkavkskjhjlh87gr1844.apps.googleusercontent.com"

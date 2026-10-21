@@ -8,7 +8,7 @@ const IS_LOCAL = ['localhost', '127.0.0.1'].includes(location.hostname);
 
 const CONFIG = {
   // Set to the deployed Worker URL after `wrangler deploy` (see worker/README.md).
-  API_BASE: IS_LOCAL ? 'http://localhost:8787' : 'https://fp-projects-api.REPLACE-ME.workers.dev',
+  API_BASE: IS_LOCAL ? 'http://localhost:8787' : 'https://fp-projects-api.fatpossum.workers.dev',
   GOOGLE_CLIENT_ID: '955463970238-o8p7ujrhusedtkavkskjhjlh87gr1844.apps.googleusercontent.com',
 };
 
