@@ -86,6 +86,7 @@ export default {
 
   async scheduled(event, env, ctx) {
     ctx.waitUntil(runCalendarSync(env));
+    ctx.waitUntil(dailyTourSync(env));
   },
 };
 
@@ -188,6 +189,13 @@ async function route(request, url, env, ctx) {
       await env.DB.prepare('UPDATE artists SET share_token = NULL WHERE id = ?').bind(id).run();
       return json({ ok: true });
     }
+  }
+
+  if (res === 'projects' && id && sub === 'tour' && sub2 === 'pull' && m === 'POST') {
+    write();
+    if (!env.CHARTMETRIC_REFRESH_TOKEN) throw new HttpError(400, 'Chartmetric isn’t connected (needs CHARTMETRIC_REFRESH_TOKEN)');
+    const r = await pullProjectTour(id, { email: user.email }, env, true);
+    return json({ ...r, project: await getRow(TABLES.projects, id, env) });
   }
 
   if (res === 'projects' && id && sub === 'milestones' && sub2 === 'generate' && m === 'POST') {
@@ -1102,4 +1110,94 @@ async function cmArtist(cmId, env) {
     if (Number.isFinite(n) && n >= 0) out.followers[key] = { count: Math.round(n), asof: today, source: 'Chartmetric' };
   }
   return out;
+}
+
+// ── TOUR DATES (Chartmetric live events) ─────────────────────
+// Chartmetric aggregates Songkick, JamBase, SeatGeek and Ticketmaster listings.
+// Anything listed there is public, so it counts as announced. Manually entered
+// shows stay "not announced" until a matching listing (same date + city) appears.
+async function cmEvents(cmId, env) {
+  const out = [];
+  for (const type of ['concert', 'festival']) {
+    const d = await cmGet(`/artist/${cmId}/current/events?fromDaysAgo=30&toDaysAgo=-540&limit=100&type=${type}`, env);
+    for (const e of d.obj || []) {
+      const date = String(e.start_date || '').slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+      out.push({
+        ext_id: 'cm:' + e.id, date,
+        city: [e.city?.name, e.city?.province || e.code2].filter(Boolean).join(', '),
+        venue: e.venue_name || '',
+        notes: e.type === 'Festival' && e.event_name ? String(e.event_name).replace(/\s*\(cancelled\)\s*$/i, '') : '',
+        ticket_url: e.ticketmaster_event_url || e.seatgeek_event_url || e.songkick_event_url || e.jambase_event_url || '',
+        cancelled: /\(cancelled\)/i.test(e.event_name || ''),
+      });
+    }
+  }
+  return out;
+}
+
+const cityKey = c => String(c || '').split(',')[0].trim().toLowerCase();
+
+function mergeTour(rows, events) {
+  rows = (rows || []).map(r => ({ ...r }));
+  let added = 0, updated = 0;
+  for (const ev of events) {
+    const hit = rows.find(r => r.ext_id === ev.ext_id) || rows.find(r => !r.ext_id && r.date === ev.date && cityKey(r.city) === cityKey(ev.city));
+    if (hit) {
+      const before = JSON.stringify(hit);
+      hit.ext_id = ev.ext_id; hit.ticket_url = ev.ticket_url || hit.ticket_url || ''; hit.cancelled = ev.cancelled; hit.announced = true;
+      if (hit.source === 'chartmetric') Object.assign(hit, { date: ev.date, city: ev.city, venue: ev.venue, notes: hit.notes || ev.notes });
+      else { if (!hit.venue) hit.venue = ev.venue; if (!hit.city) hit.city = ev.city; }
+      if (JSON.stringify(hit) !== before) updated++;
+    } else {
+      rows.push({ key: crypto.randomUUID().slice(0, 8), ...ev, source: 'chartmetric', announced: true });
+      added++;
+    }
+  }
+  rows.sort((a, b) => String(a.date || '9').localeCompare(String(b.date || '9')));
+  return { rows, added, updated };
+}
+
+async function projectCmId(p, env) {
+  const d = p.data || {};
+  if (d.chartmetric_id) return d.chartmetric_id;
+  const a = await env.DB.prepare('SELECT profile FROM artists WHERE name = ? COLLATE NOCASE').bind(p.artist).first();
+  let prof = {}; try { prof = JSON.parse(a?.profile || '{}'); } catch { /* none */ }
+  if (prof.chartmetric_id) return prof.chartmetric_id;
+  const spotify = d.dsp_links?.spotify || prof.dsp_links?.spotify;
+  return spotify ? (await cmSearch(spotify, env))[0]?.id || null : null;
+}
+
+async function pullProjectTour(projectId, user, env, strict) {
+  const p = await getRow(TABLES.projects, projectId, env);
+  if (!p) throw new HttpError(404, 'Project not found');
+  const cmId = await projectCmId(p, env);
+  if (!cmId) {
+    if (strict) throw new HttpError(400, 'This artist isn’t linked to Chartmetric yet. Use “Look up online” (or add their Spotify link) first.');
+    return { added: 0, updated: 0, skipped: true };
+  }
+  const events = await cmEvents(cmId, env);
+  const { rows, added, updated } = mergeTour(p.data.tour, events);
+  p.data.tour = rows;
+  p.data.chartmetric_id = String(cmId);
+  p.data.tour_synced_at = now();
+  await patchRow(TABLES.projects, p.id, { data: JSON.stringify(p.data) }, user, env, (added || updated) ? now() : p.updated_at);
+  return { added, updated, found: events.length };
+}
+
+// Once a day (first cron run after 09:00 UTC) refresh tour dates on current projects.
+async function dailyTourSync(env) {
+  if (!env.CHARTMETRIC_REFRESH_TOKEN) return;
+  const day = new Date().toISOString().slice(0, 10);
+  if (new Date().getUTCHours() < 9) return;
+  const last = await env.DB.prepare("SELECT value FROM sync_state WHERE key = 'tour_sync_day'").first();
+  if (last?.value === day) return;
+  await env.DB.prepare("INSERT INTO sync_state (key, value) VALUES ('tour_sync_day', ?1) ON CONFLICT(key) DO UPDATE SET value = ?1").bind(day).run();
+  const projects = (await env.DB.prepare('SELECT id FROM projects WHERE release_date IS NULL OR release_date >= ?').bind(addDays(day, -120)).all()).results;
+  let added = 0, updated = 0;
+  for (const { id } of projects) {
+    try { const r = await pullProjectTour(id, { email: 'tour-sync' }, env, false); added += r.added; updated += r.updated; }
+    catch (e) { await logSync(env, 'warn', `tour sync ${id}: ${e.message}`); }
+  }
+  await logSync(env, 'info', `daily tour sync: ${projects.length} projects, ${added} shows added, ${updated} updated`);
 }

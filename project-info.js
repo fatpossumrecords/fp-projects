@@ -23,7 +23,7 @@
     dsp_extra: { cols: [['label', 'Name'], ['url', 'Link', 'url']], addLabel: '+ Add another DSP', placeholder: { label: 'e.g. Audiomack, Napster' }, hideEmpty: true },
     tracks: { cols: [['vol', 'Vol'], ['num', '#'], ['song', 'Song'], ['length', 'Length'], ['isrc', 'ISRC'], ['writers', 'Writers'], ['publishers', 'Publishers']] },
     playlists: { cols: [['dsp', 'DSP', 'dsp'], ['name', 'Playlist', 'playlists'], ['url', 'Link', 'url'], ['status', 'Status', 'plstatus'], ['notes', 'Notes']] },
-    tour: { cols: [['date', 'Date', 'date'], ['city', 'City'], ['venue', 'Venue'], ['notes', 'Notes']] },
+    tour: { cols: [['date', 'Date', 'date'], ['city', 'City'], ['venue', 'Venue'], ['notes', 'Notes']], keyed: true },
   };
 
   const COL_W = { vol: 'width:56px', num: 'width:56px', length: 'width:80px', song: 'min-width:200px', isrc: 'min-width:140px', url: 'min-width:220px',
@@ -237,7 +237,7 @@
   }
 
   // ── RENDER ─────────────────────────────────────────────────
-  function render(box, proj, ro, onChange) {
+  function render(box, proj, ro, onChange, hooks = {}) {
     // Fresh node each render so delegated listeners from a previous render don't stack.
     const fresh = box.cloneNode(false); box.replaceWith(fresh); box = fresh;
     if (!ro) FP.preloadDropbox();
@@ -292,7 +292,11 @@
       press: () => `<div class="grid">${FP.field('Quotes', ta('data.press_quotes', 4), 'wide')}${FP.field('Links', ta('data.press_links', 3), 'wide')}${FP.field('Previous press', ta('data.press_previous', 3), 'wide')}</div>`,
       radio: () => ta('data.radio', 3),
       syncs: () => ta('data.syncs', 3),
-      tour: () => `<div class="toolbar" style="margin-bottom:8px">${btn('data-paste="tour"', 'Paste tour dates…')}<span class="hint">Paste a list from an agent email, a spreadsheet or a website, one show per line.</span></div>${rep('tour')}`,
+      tour: () => `<div class="toolbar" style="margin-bottom:8px">
+          ${FP.state.sources?.chartmetric && hooks.pullTour ? btn('data-pull-tour', 'Pull tour dates (Chartmetric)') : ''}
+          ${btn('data-paste="tour"', 'Paste tour dates…')}
+          <span class="hint">${d.tour_synced_at ? `Last pulled ${new Date(d.tour_synced_at).toLocaleString()}. ` : ''}${FP.state.sources?.chartmetric ? 'Announced shows are pulled from Songkick, Ticketmaster, SeatGeek and JamBase (via Chartmetric), and refreshed daily.' : 'Paste a list from an agent email, a spreadsheet or a website, one show per line.'}</span></div>
+        ${tourTable()}`,
       recording: () => ta('data.recording', 4),
     };
     const TITLES = [['overview', 'Overview'], ['social', 'Social'], ['dsps', 'DSPs'], ['riyl', 'RIYL'], ['smart_links', 'Smart Links'], ['assets', 'Assets'],
@@ -309,6 +313,27 @@
           <td><input type="number" min="0" data-fk="${k}" value="${esc(f?.count ?? '')}"${dis} placeholder="—"></td>
           <td class="hint" data-asof="${k}">${fmtAsof(f)}</td></tr>`; }).join('')}
         </tbody></table></div>`;
+    }
+
+    // Tour rows: editable date/city/venue/notes, plus an Announced marker. Pulled
+    // (public) shows are always announced; manual ones flip when a listing appears.
+    function tourTable() {
+      const rows = d.tour;
+      return `<div class="rep"><table><thead><tr><th style="width:150px">Date</th><th>City</th><th>Venue</th><th>Notes</th><th style="width:150px">Status</th><th></th></tr></thead><tbody>
+        ${rows.map((r, i) => {
+          const a = `data-rep="tour" data-i="${i}"${dis}`;
+          const status = r.cancelled ? '<span class="badge s-cancelled">Cancelled</span>'
+            : r.source === 'chartmetric' ? '<span class="badge s-confirmed">Announced</span>'
+            : `<label style="display:flex;gap:4px;align-items:center;white-space:nowrap"><input type="checkbox" data-tour-ann="${i}"${r.announced ? ' checked' : ''}${dis}> ${r.announced ? '<span class="badge s-confirmed">Announced</span>' : '<span class="badge s-planning">Not announced</span>'}</label>`;
+          return `<tr${r.cancelled ? ' style="opacity:.6"' : ''}>
+            <td><input type="date" ${a} data-k="date" value="${esc(r.date)}"></td>
+            <td><input type="text" ${a} data-k="city" value="${esc(r.city)}"></td>
+            <td><div style="display:flex;gap:4px;align-items:center"><input type="text" ${a} data-k="venue" value="${esc(r.venue)}" style="flex:1">${FP.safeUrl(r.ticket_url) ? `<a href="${esc(r.ticket_url)}" target="_blank" rel="noopener" title="Tickets">🎟</a>` : ''}</div></td>
+            <td><input type="text" ${a} data-k="notes" value="${esc(r.notes)}"></td>
+            <td>${status}</td>
+            <td style="width:30px">${ro ? '' : `<button class="btn-ghost btn-sm" data-del="tour" data-i="${i}" title="Remove">✕</button>`}</td></tr>`;
+        }).join('')}</tbody></table>${ro ? '' : '<button class="btn btn-sm add" data-add="tour">+ Add date</button>'}</div>
+        ${rows.length ? `<p class="hint" style="margin-top:6px">${rows.filter(r => !r.announced && !r.cancelled).length} not announced · ${rows.filter(r => r.announced && !r.cancelled).length} announced${rows.some(r => r.cancelled) ? ` · ${rows.filter(r => r.cancelled).length} cancelled` : ''}</p>` : ''}`;
     }
 
     function rep(name) {
@@ -397,6 +422,7 @@
 
     box.addEventListener('change', e => {
       const t = e.target;
+      if (t.dataset.tourAnn !== undefined) { d.tour[+t.dataset.tourAnn].announced = t.checked; refresh('tour'); onChange(); return; }
       if (t.dataset.p === 'artist') fillProfile(true);
       // Picking a known contact fills the rest of their row.
       if (t.dataset.rep === 'team' && t.dataset.k === 'name') {
@@ -421,6 +447,7 @@
         const name = add.dataset.add, row = {};
         if (REPS[name].keyed) row.key = crypto.randomUUID().slice(0, 8);
         if (name === 'playlists') row.status = 'Target';
+        if (name === 'tour') { row.announced = false; row.source = 'manual'; }
         d[name].push(row);
         refresh(repSection(name));
         const inputs = box.querySelectorAll(`[data-rep="${name}"][data-i="${d[name].length - 1}"]`);
@@ -435,6 +462,7 @@
       }
       if (t.matches('[data-fill-profile]')) { e.preventDefault(); fillProfile(false); }
       if (t.matches('[data-lookup]')) { e.preventDefault(); lookupOnline(); }
+      if (t.matches('[data-pull-tour]')) { t.disabled = true; try { await hooks.pullTour(); } finally { t.disabled = false; } }
       if (t.matches('[data-refresh-followers]')) {
         if (!d.social.youtube && !d.dsp_links.spotify) return FP.toast('Add the YouTube channel and/or Spotify artist link first', true);
         t.disabled = true;
@@ -594,9 +622,11 @@
         title: 'Paste tour dates', wide: true, saveLabel: 'Add these dates',
         body: `<p class="hint" style="margin-bottom:8px">One show per line, starting with the date. For example:<br><span class="mono">Mar 14 - Nashville, TN - The Basement East</span><br><span class="mono">3/15/27 Atlanta, GA @ Terminal West</span><br><span class="mono">Fri, April 2 | London, UK | Lafayette</span></p>
           <textarea id="pt-text" rows="10" style="font-family:var(--mono);font-size:12px"></textarea>
+          <label style="display:block;margin-top:8px"><input type="checkbox" id="pt-ann"> These dates are already announced publicly</label>
           <div id="pt-prev" style="margin-top:10px"></div>`,
         onSave: el => {
-          const rows = parseTour(el.querySelector('#pt-text').value).filter(r => !r.error);
+          const ann = el.querySelector('#pt-ann').checked;
+          const rows = parseTour(el.querySelector('#pt-text').value).filter(r => !r.error).map(r => ({ ...r, key: crypto.randomUUID().slice(0, 8), source: 'manual', announced: ann }));
           if (!rows.length) throw new Error('No dates found. Each line needs to start with a date.');
           const seen = new Set(d.tour.map(t => t.date + '|' + String(t.city || '').toLowerCase()));
           let added = 0;
@@ -728,7 +758,10 @@
       ${section('Press', facts(press.map(([l, v]) => [l, linkify(v)])))}
       ${section('Radio', has(d.radio) ? para(linkify(d.radio)) : '')}
       ${section('Syncs', has(d.syncs) ? para(linkify(d.syncs)) : '')}
-      ${section('Tour Dates', grid([['date', 'Date', v => esc(FP.fmtDate(v, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }))], ['city', 'City'], ['venue', 'Venue'], ['notes', 'Notes']], d.tour))}
+      ${section('Tour Dates', grid([['date', 'Date', v => esc(FP.fmtDate(v, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' }))], ['city', 'City'],
+        ['venue', 'Venue', (v, r) => FP.safeUrl(r.ticket_url) ? `<a href="${esc(r.ticket_url)}">${esc(v || 'Tickets')}</a>` : esc(v)], ['notes', 'Notes'],
+        ['status', 'Status', v => v === 'Not announced' ? `<b style="color:${C.accent}">Not announced</b>` : esc(v)]],
+        d.tour.map(t => ({ ...t, status: t.cancelled ? 'Cancelled' : t.announced ? 'Announced' : 'Not announced' }))))}
       ${section('Recording Details', has(d.recording) ? para(linkify(d.recording)) : '')}
       <p style="margin:28pt 0 0 0;font-size:8pt;color:${C.muted}">Updated ${updated} from the Fat Possum project system. To change anything, edit the project in the app and click “Update Google Doc”. Edits made directly in this document are replaced on the next update.</p>
     </body></html>`;

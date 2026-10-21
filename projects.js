@@ -105,7 +105,7 @@
     const drawTab = () => {
       main.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === tab));
       $('#pe-save').classList.toggle('hidden', tab !== 'info');
-      if (tab === 'info') FP.projectInfo.render($('#pe-body'), proj, ro, () => { drawTitle(); setDirty(); });
+      if (tab === 'info') FP.projectInfo.render($('#pe-body'), proj, ro, () => { drawTitle(); setDirty(); }, { pullTour });
       if (tab === 'dates') renderDates($('#pe-body'), proj);
       if (tab === 'social') renderProjectSocial($('#pe-body'), proj);
     };
@@ -149,6 +149,18 @@
         if (e.status !== 409) FP.toast(e.message, true);
         return false;
       } finally { if (btn) btn.disabled = false; }
+    }
+
+    // Saves pending edits first, then the server merges Chartmetric listings into the stored tour list.
+    async function pullTour() {
+      if (isNew) return FP.toast('Create the project first', true);
+      if (page.dirty && !(await save())) return;
+      try {
+        const r = await FP.post(`/api/projects/${proj.id}/tour/pull`);
+        proj = r.project; proj.data = FP.projectInfo.normalize(proj.data); original = JSON.stringify(proj); setDirty();
+        drawTab();
+        FP.toast(r.found ? `Found ${r.found} listed show${r.found === 1 ? '' : 's'}: ${r.added} added, ${r.updated} updated` : 'No upcoming shows listed for this artist');
+      } catch (e) { FP.toast(e.message, true); }
     }
 
     $('#pe-savebtn')?.addEventListener('click', save);

@@ -40,6 +40,10 @@ globalThis.fetch = async (url, opts = {}) => {
       { domain: 'spotify', url: ['https://open.spotify.com/artist/3TVXtAsR1Inumwj472S9r4'] }, { domain: 'instagram', url: ['https://www.instagram.com/ninasky/?hl=en'] },
       { domain: 'twitter', url: ['https://twitter.com/ninasky'] }, { domain: 'youtube', url: ['https://www.youtube.com/channel/UCByOQJjav0CUDwxCk-jVNRQ'] },
       { domain: 'website', url: ['http://www.ninasky.com/'] }, { domain: 'itunes', url: 'https://music.apple.com/us/artist/123' }, { domain: 'genius', url: ['https://genius.com/artists/nina'] } ] });
+    if (u.pathname === '/api/artist/2000/current/events') return J({ obj: u.searchParams.get('type') === 'festival'
+      ? [{ id: 9, event_name: 'Pitchfork Music Festival', type: 'Festival', start_date: '2027-07-17T00:00:00.000Z', venue_name: 'Union Park', city: { name: 'Chicago', province: 'Illinois' }, code2: 'US' }]
+      : [{ id: 7, event_name: 'Nina Sky at The Basement East', type: 'Concert', start_date: '2027-03-14T00:00:00.000Z', venue_name: 'The Basement East', city: { name: 'Nashville', province: 'Tennessee' }, code2: 'US', ticketmaster_event_url: 'https://ticketmaster.com/e/7' },
+         { id: 8, event_name: 'Nina Sky at Terminal West (cancelled)', type: 'Concert', start_date: '2027-03-15T00:00:00.000Z', venue_name: 'Terminal West', city: { name: 'Atlanta', province: 'Georgia' }, code2: 'US' }] });
     if (u.pathname === '/api/artist/2000/relatedartists') return J({ obj: [{ id: 1, name: 'Ciara' }, { id: 2, name: 'Cassie' }] });
     return J({});
   }
@@ -150,6 +154,19 @@ ok(cm.hometown === 'Queens, US' && cm.genre === 'Pop, R&B/Soul, Dance' && cm.riy
 ok(cm.followers.instagram.count === 52000 && cm.followers.spotify_listeners.count === 106103812 && !cm.followers.facebook, 'Chartmetric follower counts (string values parsed, nulls skipped)');
 const fr = await A('POST', '/api/followers', { spotify: 'https://open.spotify.com/artist/3TVXtAsR1Inumwj472S9r4' });
 ok(fr.source === 'Chartmetric' && fr.chartmetric_id === '2000' && fr.counts.tiktok.count === 9100, 'follower refresh finds the artist by Spotify link via Chartmetric');
+
+// 11. tour dates: pulled shows merge with manual ones
+const tp3 = await A('POST', '/api/projects', { artist: 'G', title: 'H', data: { chartmetric_id: '2000', tour: [
+  { key: 'm1', date: '2027-03-14', city: 'Nashville, TN', venue: '', announced: false, source: 'manual' },
+  { key: 'm2', date: '2027-04-01', city: 'Denver, CO', venue: 'Bluebird', announced: false, source: 'manual' } ] } });
+const pull1 = await A('POST', `/api/projects/${tp3.id}/tour/pull`);
+const t1 = pull1.project.data.tour;
+const nash = t1.find(t => t.key === 'm1'), den = t1.find(t => t.key === 'm2');
+ok(nash.announced === true && nash.venue === 'The Basement East' && nash.ticket_url === 'https://ticketmaster.com/e/7', 'manual unannounced show flips to announced when a matching listing appears');
+ok(den.announced === false, 'manual show with no listing stays not announced');
+ok(t1.length === 4 && t1.find(t => t.city.startsWith('Atlanta')).cancelled === true && t1.find(t => t.notes === 'Pitchfork Music Festival'), 'new concerts and festivals added, cancelled flagged');
+const pull2 = await A('POST', `/api/projects/${tp3.id}/tour/pull`);
+ok(pull2.project.data.tour.length === 4 && pull2.added === 0, 'pulling again adds no duplicates');
 
 const log = await A('GET', '/api/sync/log');
 ok(!log.some(l => l.level === 'error'), 'no sync errors logged' + (log.filter(l => l.level === 'error').map(l => ' | ' + l.msg).join('')));
