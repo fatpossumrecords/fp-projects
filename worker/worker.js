@@ -162,6 +162,7 @@ async function route(request, url, env, ctx) {
     return json(summary);
   }
 
+  if (res === 'linkinfo' && m === 'GET') return json(await linkInfo(url.searchParams.get('url') || ''));
   if (res === 'followers' && m === 'POST') return json(await fetchFollowers(await body(request), env));
   if (res === 'chartmetric') {
     if (!env.CHARTMETRIC_REFRESH_TOKEN) throw new HttpError(400, 'Chartmetric isn’t connected (needs CHARTMETRIC_REFRESH_TOKEN)');
@@ -1221,4 +1222,42 @@ async function dailyTourSync(env) {
     catch (e) { await logSync(env, 'warn', `tour sync ${id}: ${e.message}`); }
   }
   await logSync(env, 'info', `daily tour sync: ${projects.length} projects, ${added} shows added, ${updated} updated`);
+}
+
+// ── LINK INFO (press paste) ──────────────────────────────────
+// Reads a public article's site name and headline from its <meta> tags so pasted
+// press links can be labelled and sorted. Best effort: some sites block bots.
+async function linkInfo(raw) {
+  let u;
+  try { u = new URL(raw); } catch { throw new HttpError(400, 'Not a link'); }
+  if (!/^https?:$/.test(u.protocol) || /^(localhost|\d+\.\d+\.\d+\.\d+|\[.*\])$/i.test(u.hostname)) throw new HttpError(400, 'Not a public link');
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 6000);
+  try {
+    const r = await fetch(u.href, { redirect: 'follow', signal: ctrl.signal, headers: {
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36',
+      Accept: 'text/html,application/xhtml+xml' } });
+    if (!r.ok || !/html/i.test(r.headers.get('content-type') || '')) return { url: r.url || u.href };
+    // Only the <head> matters; stop reading after ~200 KB.
+    const reader = r.body.getReader(); let html = '', size = 0;
+    while (size < 200000) { const { done, value } = await reader.read(); if (done) break; size += value.length; html += new TextDecoder().decode(value); if (/<\/head>/i.test(html)) break; }
+    try { reader.cancel(); } catch { /* ignore */ }
+    const meta = name => {
+      const m = html.match(new RegExp(`<meta[^>]+(?:property|name)=["']${name}["'][^>]*>`, 'i'));
+      const c = m && m[0].match(/content=["']([^"']*)["']/i);
+      return c ? decodeEntities(c[1]).trim() : '';
+    };
+    const title = meta('og:title') || meta('twitter:title') || decodeEntities((html.match(/<title[^>]*>([^<]*)<\/title>/i) || [])[1] || '').trim();
+    return { url: r.url || u.href, site: meta('og:site_name'), title: title.slice(0, 300) };
+  } catch { return { url: u.href }; }
+  finally { clearTimeout(timer); }
+}
+
+function decodeEntities(s) {
+  return String(s).replace(/&(#x?[0-9a-f]+|amp|lt|gt|quot|apos|#39|nbsp|rsquo|lsquo|ldquo|rdquo|ndash|mdash|hellip);/gi, (m, e) => {
+    const map = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", '#39': "'", nbsp: ' ', rsquo: '’', lsquo: '‘', ldquo: '“', rdquo: '”', ndash: '–', mdash: '—', hellip: '…' };
+    if (map[e.toLowerCase()]) return map[e.toLowerCase()];
+    if (e[0] === '#') { const n = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10); return Number.isFinite(n) ? String.fromCodePoint(n) : m; }
+    return m;
+  });
 }

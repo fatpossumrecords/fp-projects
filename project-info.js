@@ -24,7 +24,6 @@
     tracks: { cols: [['vol', 'Vol'], ['num', '#'], ['song', 'Song'], ['length', 'Length'], ['isrc', 'ISRC'], ['writers', 'Writers'], ['publishers', 'Publishers']] },
     playlists: { cols: [['dsp', 'DSP', 'dsp'], ['name', 'Playlist', 'playlists'], ['url', 'Link', 'url'], ['status', 'Status', 'plstatus'], ['notes', 'Notes']] },
     tour: { cols: [['date', 'Date', 'date'], ['city', 'City'], ['venue', 'Venue'], ['notes', 'Notes']], keyed: true },
-    press: { cols: [['campaign', 'For'], ['single', 'Single'], ['outlet', 'Publication'], ['url', 'Link'], ['notes', 'Notes']] },
   };
 
   const COL_W = { vol: 'width:56px', num: 'width:56px', length: 'width:80px', song: 'min-width:200px', isrc: 'min-width:140px', url: 'min-width:220px',
@@ -48,7 +47,7 @@
   }
 
   function blankData() {
-    return { press: [], social: {}, dsp_links: {}, followers: {}, assets: {}, social_extra: [], dsp_extra: [], smart_links: [], team: [], formats: [], timeline: [], tracks: [], playlists: [], tour: [] };
+    return { press_sections: [], social: {}, dsp_links: {}, followers: {}, assets: {}, social_extra: [], dsp_extra: [], smart_links: [], team: [], formats: [], timeline: [], tracks: [], playlists: [], tour: [] };
   }
 
   // Fills defaults and converts sheets saved by the first version of the form.
@@ -80,6 +79,19 @@
       });
     }
     delete d.press_links;
+    // A flat coverage list (previous version) becomes sections grouped by what it was for.
+    if (!Array.isArray(d.press_sections)) d.press_sections = [];
+    if (Array.isArray(d.press) && d.press.length && !d.press_sections.length) {
+      for (const x of d.press) {
+        const type = ['Single', 'Album', 'Tour'].includes(x.campaign) ? x.campaign : 'Other';
+        const name = type === 'Single' ? (x.single || '') : '';
+        let sec = d.press_sections.find(sc => sc.type === type && sc.name === name);
+        if (!sec) d.press_sections.push(sec = { key: crypto.randomUUID().slice(0, 8), type, name, items: [] });
+        sec.items.push({ outlet: x.outlet || '', url: x.url || '', notes: x.notes || '' });
+      }
+    }
+    delete d.press;
+    for (const sc of d.press_sections) { if (!sc.key) sc.key = crypto.randomUUID().slice(0, 8); if (!Array.isArray(sc.items)) sc.items = []; }
     delete d.tracklisting;
     for (const k of Object.keys(REPS)) if (!Array.isArray(d[k])) d[k] = [];
     for (const k of Object.keys(REPS)) if (REPS[k].keyed) for (const row of d[k]) if (!row.key) row.key = crypto.randomUUID().slice(0, 8);
@@ -265,6 +277,29 @@
     }));
   }
 
+  // Publication names for common music press, by web address. Anything else uses the
+  // page's own site name, the text pasted beside the link, or a tidied domain.
+  const OUTLETS = { 'pitchfork.com': 'Pitchfork', 'stereogum.com': 'Stereogum', 'nme.com': 'NME', 'rollingstone.com': 'Rolling Stone', 'brooklynvegan.com': 'BrooklynVegan',
+    'consequence.net': 'Consequence', 'theguardian.com': 'The Guardian', 'nytimes.com': 'The New York Times', 'npr.org': 'NPR', 'uncut.co.uk': 'Uncut', 'mojo4music.com': 'MOJO',
+    'thefader.com': 'The FADER', 'pastemagazine.com': 'Paste', 'uproxx.com': 'Uproxx', 'spin.com': 'SPIN', 'billboard.com': 'Billboard', 'floodmagazine.com': 'FLOOD',
+    'gorillavsbear.net': 'Gorilla vs. Bear', 'thelineofbestfit.com': 'The Line of Best Fit', 'clashmusic.com': 'Clash', 'loudandquiet.com': 'Loud And Quiet',
+    'daily.bandcamp.com': 'Bandcamp Daily', 'kexp.org': 'KEXP', 'wfuv.org': 'WFUV', 'kcrw.com': 'KCRW', 'aquariumdrunkard.com': 'Aquarium Drunkard',
+    'undertheradarmag.com': 'Under the Radar', 'exclaim.ca': 'Exclaim!', 'thequietus.com': 'The Quietus', 'popmatters.com': 'PopMatters', 'vulture.com': 'Vulture',
+    'newyorker.com': 'The New Yorker', 'latimes.com': 'Los Angeles Times', 'washingtonpost.com': 'The Washington Post', 'bbc.co.uk': 'BBC', 'americansongwriter.com': 'American Songwriter',
+    'nodepression.com': 'No Depression', 'glidemagazine.com': 'Glide Magazine', 'relix.com': 'Relix', 'magnetmagazine.com': 'MAGNET', 'treblezine.com': 'Treble',
+    'gq.com': 'GQ', 'vogue.com': 'Vogue', 'interviewmagazine.com': 'Interview', 'dazeddigital.com': 'Dazed', 'iheart.com': 'iHeart', 'atwoodmagazine.com': 'Atwood Magazine',
+    'thewild-honeypie.com': 'The Wild Honey Pie', 'bandsintown.com': 'Bandsintown', 'wonderlandmagazine.com': 'Wonderland', 'crack-magazine.com': 'Crack Magazine' };
+  function outletName(url, site, text) {
+    let host = '';
+    try { host = new URL(url).hostname.replace(/^www\./, ''); } catch { /* not a URL */ }
+    const known = OUTLETS[host] || OUTLETS[host.split('.').slice(-2).join('.')];
+    if (known) return known;
+    if (site && site.length < 60) return site;
+    if (text && text.length < 60 && !/https?:/.test(text)) return text;
+    const base = host.split('.').slice(-2, -1)[0] || host;
+    return base.replace(/[-_]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  }
+
   // ── RENDER ─────────────────────────────────────────────────
   function render(box, proj, ro, onChange, hooks = {}) {
     // Fresh node each render so delegated listeners from a previous render don't stack.
@@ -326,7 +361,7 @@
       playlists: () => `${rep('playlists')}<p class="hint" style="margin-top:6px">Start typing a playlist name to pick one you've used before, and its link fills in. New playlists are saved to the library when you save.</p>
         ${d.dsp && Object.values(d.dsp).some(v => v?.targets || v?.current) ? `<details style="margin-top:8px"><summary class="hint">Earlier playlisting notes</summary>${Object.entries(d.dsp).map(([k, v]) => v?.targets || v?.current ? `<p><b>${esc(k)}</b>: ${esc(v.targets || '')} ${v.current ? ' / current: ' + esc(v.current) : ''}</p>` : '').join('')}</details>` : ''}`,
       press: () => `<div class="grid">${FP.field('Quotes', ta('data.press_quotes', 4, 'Pull quotes for the one-sheet'), 'wide')}</div>
-        <div style="margin-top:10px"><label class="hint" style="font-weight:600">Coverage</label>${pressTable()}</div>
+        <div style="margin-top:12px">${pressSections()}</div>
         <div class="grid" style="margin-top:10px">${FP.field('Previous press', ta('data.press_previous', 3), 'wide')}</div>`,
       radio: () => ta('data.radio', 3),
       syncs: () => ta('data.syncs', 3),
@@ -357,19 +392,29 @@
         </tbody></table></div>`;
     }
 
-    // Press coverage: what it's for (single / album / tour), the outlet, link and notes.
-    function pressTable() {
-      const songs = d.tracks.map(t => t.song).filter(Boolean);
+    // Press is organised in sections — Single 1, Single 2, Album, Tour — each with its
+    // own coverage list, so nothing has to be tagged item by item.
+    function pressSections() {
+      const songs = [...new Set([...d.tracks.map(t => t.song), ...String(d.focus_tracks || '').split(',').map(x => x.trim())].filter(Boolean))];
+      const typeLabel = t => ({ Single: 'Single', Album: 'Album', Tour: 'Tour', Other: 'Other' })[t] || 'Other';
+      const box = (sc, i) => `<div class="form-section" style="margin:0 0 10px 0;background:#fff">
+        <h3 style="text-transform:none;letter-spacing:0;gap:8px">
+          <select data-ps="${i}" data-psf="type"${dis} style="font-weight:600">${FP.options(['Single', 'Album', 'Tour', 'Other'], sc.type, { blank: false })}</select>
+          <input type="text" data-ps="${i}" data-psf="name" value="${esc(sc.name)}"${sc.type === 'Single' ? ' list="dl-singles" placeholder="Single name"' : sc.type === 'Album' ? ' placeholder="Album title"' : sc.type === 'Tour' ? ' placeholder="e.g. Fall 2026 US tour"' : ' placeholder="Section name"'}${dis} style="flex:1">
+          <span class="hint">${sc.items.filter(x => x.outlet || x.url).length} item${sc.items.length === 1 ? '' : 's'}</span>
+          ${ro ? '' : `<button class="btn-ghost btn-sm" data-ps-paste="${i}" title="Paste several links into this section">Paste links</button><button class="btn-ghost btn-sm" data-ps-del="${i}" title="Remove section">✕</button>`}
+        </h3>
+        <div class="fs-body" style="padding:8px 10px"><div class="rep"><table><thead><tr><th style="width:200px">Publication</th><th>Link</th><th>Notes</th><th></th></tr></thead><tbody>
+          ${sc.items.map((x, j) => { const at = `data-ps="${i}" data-pi="${j}"${dis}`; return `<tr>
+            <td><input type="text" ${at} data-pk="outlet" value="${esc(x.outlet)}" placeholder="e.g. Pitchfork"></td>
+            <td><div style="display:flex;gap:4px;align-items:center"><input type="url" ${at} data-pk="url" value="${esc(x.url)}" style="flex:1">${openLink(x.url)}</div></td>
+            <td><input type="text" ${at} data-pk="notes" value="${esc(x.notes)}" placeholder="Optional"></td>
+            <td style="width:30px">${ro ? '' : `<button class="btn-ghost btn-sm" data-ps-del-item="${i}:${j}" title="Remove">✕</button>`}</td></tr>`; }).join('')}
+          </tbody></table>${ro ? '' : `<button class="btn btn-sm add" data-ps-add-item="${i}">+ Add coverage</button>`}</div></div></div>`;
       return `<datalist id="dl-singles">${songs.map(x => `<option value="${esc(x)}">`).join('')}</datalist>
-        <div class="rep"><table><thead><tr><th style="width:120px">For</th><th style="width:180px">Single</th><th>Publication</th><th>Link</th><th>Notes</th><th></th></tr></thead><tbody>
-        ${d.press.map((r, i) => { const a = `data-rep="press" data-i="${i}"${dis}`; return `<tr>
-          <td><select ${a} data-k="campaign">${FP.options(['Single', 'Album', 'Tour'], r.campaign)}</select></td>
-          <td>${r.campaign === 'Single' ? `<input type="text" ${a} data-k="single" value="${esc(r.single)}" list="dl-singles" placeholder="Which single?">` : '<span class="hint">—</span>'}</td>
-          <td><input type="text" ${a} data-k="outlet" value="${esc(r.outlet)}" placeholder="e.g. Pitchfork"></td>
-          <td><div style="display:flex;gap:4px;align-items:center"><input type="url" ${a} data-k="url" value="${esc(r.url)}" style="flex:1">${openLink(r.url)}</div></td>
-          <td><input type="text" ${a} data-k="notes" value="${esc(r.notes)}" placeholder="Optional"></td>
-          <td style="width:30px">${ro ? '' : `<button class="btn-ghost btn-sm" data-del="press" data-i="${i}" title="Remove">✕</button>`}</td></tr>`; }).join('')}
-        </tbody></table>${ro ? '' : '<button class="btn btn-sm add" data-add="press">+ Add coverage</button>'}</div>`;
+        ${d.press_sections.map(box).join('') || '<p class="hint" style="margin-bottom:8px">No coverage yet. Add a section for each single, the album or the tour.</p>'}
+        ${ro ? '' : `<div class="toolbar"><button class="btn btn-sm" data-ps-add="Single">+ Single section</button><button class="btn btn-sm" data-ps-add="Album">+ Album section</button>
+          <button class="btn btn-sm" data-ps-add="Tour">+ Tour section</button><span class="spacer"></span><button class="btn btn-sm" data-ps-paste="">Paste links…</button></div>`}`;
     }
 
     // Tour rows: editable date/city/venue/notes, plus an Announced marker. Pulled
@@ -463,6 +508,8 @@
         if (t.dataset.p === 'artist') profileHint();
         onChange();
       }
+      if (t.dataset.ps !== undefined && t.dataset.psf === 'name') { d.press_sections[+t.dataset.ps].name = t.value; onChange(); return; }
+      if (t.dataset.ps !== undefined && t.dataset.pk) { d.press_sections[+t.dataset.ps].items[+t.dataset.pi][t.dataset.pk] = t.value; onChange(); return; }
       if (t.dataset.fk) {
         const k = t.dataset.fk;
         const old = d.followers[k];
@@ -483,7 +530,7 @@
     box.addEventListener('change', e => {
       const t = e.target;
       if (t.dataset.tourAnn !== undefined) { d.tour[+t.dataset.tourAnn].announced = t.checked; refresh('tour'); onChange(); return; }
-      if (t.dataset.rep === 'press' && t.dataset.k === 'campaign') { if (t.value !== 'Single') d.press[+t.dataset.i].single = ''; refresh('press'); onChange(); return; }
+      if (t.dataset.ps !== undefined && t.dataset.psf === 'type') { d.press_sections[+t.dataset.ps].type = t.value; refresh('press'); onChange(); return; }
       if (t.dataset.p === 'artist') fillProfile(true);
       // Picking a known contact fills the rest of their row.
       if (t.dataset.rep === 'team' && t.dataset.k === 'name') {
@@ -523,6 +570,24 @@
       }
       if (t.matches('[data-fill-profile]')) { e.preventDefault(); fillProfile(false); }
       if (t.matches('[data-lookup]')) { e.preventDefault(); lookupOnline(); }
+      if (t.matches('[data-ps-add]')) {
+        const type = t.dataset.psAdd;
+        d.press_sections.push({ key: crypto.randomUUID().slice(0, 8), type, name: type === 'Album' ? (proj.title || '') : '', items: [{ outlet: '', url: '', notes: '' }] });
+        refresh('press'); onChange();
+        box.querySelector(`[data-ps="${d.press_sections.length - 1}"][data-psf="name"]`)?.focus();
+      }
+      if (t.matches('[data-ps-add-item]')) {
+        const i = +t.dataset.psAddItem; d.press_sections[i].items.push({ outlet: '', url: '', notes: '' });
+        refresh('press'); onChange();
+        box.querySelector(`[data-ps="${i}"][data-pi="${d.press_sections[i].items.length - 1}"][data-pk="outlet"]`)?.focus();
+      }
+      if (t.matches('[data-ps-del-item]')) { const [i, j] = t.dataset.psDelItem.split(':').map(Number); d.press_sections[i].items.splice(j, 1); refresh('press'); onChange(); }
+      if (t.matches('[data-ps-del]')) {
+        const i = +t.dataset.psDel, sc = d.press_sections[i];
+        if (sc.items.some(x => x.url || x.outlet) && !confirm(`Remove the ${sc.type}${sc.name ? ' “' + sc.name + '”' : ''} section and its ${sc.items.length} item(s)?`)) return;
+        d.press_sections.splice(i, 1); refresh('press'); onChange();
+      }
+      if (t.matches('[data-ps-paste]')) pastePress(t.dataset.psPaste === '' ? null : +t.dataset.psPaste);
       if (t.matches('[data-team-sort]')) {
         const k = t.dataset.teamSort;
         // Rows missing the chosen field go last; ties fall back to name.
@@ -684,6 +749,88 @@
         m.el.querySelector('#pt-prev').innerHTML = rows.length ? previewTable(REPS.tracks.cols, rows) : '';
       };
       m.el.querySelector('#pt-text').addEventListener('input', prev);
+    }
+
+    // Paste a pile of press links: each gets a publication name (from the page, or a
+    // known-outlet list), then is sorted into a section by spotting the single name,
+    // album title or "tour" in its link / headline. Everything is reviewable first.
+    function pastePress(targetIdx) {
+      const m = FP.modal({
+        title: 'Paste press links', wide: true, saveLabel: 'Add to sections',
+        body: `<p class="hint" style="margin-bottom:8px">Paste links, one per line. Text on the same line (like the outlet name) is fine too. Each link is sorted into a section by matching the single name, album title or the word “tour”. Anything that doesn't match goes to ${targetIdx != null ? 'the section you pasted from' : 'the section you choose'}.</p>
+          <textarea id="pp-text" rows="8" style="font-family:var(--mono);font-size:12px"></textarea>
+          <p style="margin-top:8px"><button class="btn btn-sm" id="pp-go">Sort links</button> <span class="hint" id="pp-status"></span></p>
+          <div id="pp-prev" style="margin-top:10px"></div>`,
+        onSave: el => {
+          const rows = [...el.querySelectorAll('[data-pp-row]')].filter(r => r.querySelector('[data-pp-inc]').checked);
+          if (!rows.length) throw new Error('Nothing to add. Paste some links and click “Sort links” first.');
+          let added = 0;
+          for (const r of rows) {
+            let si = r.querySelector('[data-pp-sec]').value;
+            if (si.startsWith('new:')) {
+              const [, type, ...nm] = si.split(':');
+              d.press_sections.push({ key: crypto.randomUUID().slice(0, 8), type, name: nm.join(':'), items: [] });
+              const idx = d.press_sections.length - 1;
+              el.querySelectorAll(`[data-pp-sec] option[value="${CSS.escape(si)}"]`).forEach(o => { o.value = String(idx); });
+              si = String(idx);
+            }
+            const sc = d.press_sections[+si];
+            const url = r.dataset.url;
+            if (sc.items.some(x => x.url === url)) continue;
+            sc.items = sc.items.filter(x => x.outlet || x.url || x.notes);       // drop the empty starter row
+            sc.items.push({ outlet: r.querySelector('[data-pp-outlet]').value.trim(), url, notes: r.querySelector('[data-pp-notes]').value.trim() });
+            added++;
+          }
+          refresh('press'); onChange();
+          FP.toast(`Added ${added} link${added === 1 ? '' : 's'}`);
+        },
+      });
+      const $ = q => m.el.querySelector(q);
+      $('#pp-go').onclick = async () => {
+        const lines = $('#pp-text').value.split('\n').map(l => l.trim()).filter(Boolean);
+        const items = [];
+        for (const l of lines) for (const u of l.match(/https?:\/\/[^\s<>"']+/g) || []) items.push({ url: u.replace(/[),.;]+$/, ''), text: l.replace(u, '').replace(/^[\s\-–—:|•*]+|[\s\-–—:|]+$/g, '') });
+        const seen = new Set(), uniq = items.filter(x => !seen.has(x.url) && seen.add(x.url));
+        if (!uniq.length) { $('#pp-prev').innerHTML = '<p>No links found.</p>'; return; }
+        $('#pp-go').disabled = true;
+        // Look up page titles a few at a time.
+        let done = 0;
+        const info = new Array(uniq.length);
+        const work = uniq.map((x, i) => async () => {
+          try { info[i] = await FP.get('/api/linkinfo?url=' + encodeURIComponent(x.url)); } catch { info[i] = {}; }
+          $('#pp-status').textContent = `Reading ${++done} of ${uniq.length}…`;
+        });
+        for (let i = 0; i < work.length; i += 4) await Promise.all(work.slice(i, i + 4).map(f => f()));
+        $('#pp-status').textContent = '';
+        $('#pp-go').disabled = false;
+
+        // Section choices: existing sections, plus new ones for singles that have none yet.
+        const norm = v => String(v || '').toLowerCase().replace(/&/g, 'and').replace(/[^a-z0-9]+/g, ' ').trim();
+        const opts = d.press_sections.map((sc, i) => ({ value: String(i), label: `${sc.type}${sc.name ? ' — ' + sc.name : ''}`, type: sc.type, name: sc.name }));
+        const songs = [...new Set(d.tracks.map(t => t.song).filter(Boolean))];
+        for (const song of songs) if (!opts.some(o => o.type === 'Single' && norm(o.name) === norm(song))) opts.push({ value: `new:Single:${song}`, label: `New section: Single — ${song}`, type: 'Single', name: song, isNew: true });
+        if (!opts.some(o => o.type === 'Album')) opts.push({ value: `new:Album:${proj.title || ''}`, label: `New section: Album${proj.title ? ' — ' + proj.title : ''}`, type: 'Album', name: proj.title || '', isNew: true });
+        if (!opts.some(o => o.type === 'Tour')) opts.push({ value: 'new:Tour:', label: 'New section: Tour', type: 'Tour', name: '', isNew: true });
+        const fallback = targetIdx != null ? String(targetIdx) : (opts.find(o => !o.isNew)?.value || opts[0].value);
+        const guess = (x, inf) => {
+          const hay = ' ' + norm(decodeURIComponent(x.url) + ' ' + x.text + ' ' + (inf.title || '')) + ' ';
+          // Longest matching name wins, so "Bird Songs For Atomic Skies" beats "Skies".
+          const named = opts.filter(o => o.name && o.type !== 'Tour' && hay.includes(' ' + norm(o.name) + ' ')).sort((a2, b2) => norm(b2.name).length - norm(a2.name).length);
+          const single = named.find(o => o.type === 'Single'), album = named.find(o => o.type === 'Album');
+          if (single && !(album && norm(album.name) === norm(single.name) && /album|lp|review/.test(hay))) return single.value;
+          if (album) return album.value;
+          if (/ tour | tour dates | dates /.test(hay)) return (opts.find(o => o.type === 'Tour' && !o.isNew) || opts.find(o => o.type === 'Tour')).value;
+          return fallback;
+        };
+        $('#pp-prev').innerHTML = `<div class="tbl-wrap" style="max-height:340px"><table class="tbl edit"><thead><tr><th style="width:30px"></th><th style="width:170px">Publication</th><th>Headline / notes</th><th style="width:220px">Section</th></tr></thead><tbody>
+          ${uniq.map((x, i) => { const inf = info[i] || {}; const g = guess(x, inf); return `<tr data-pp-row data-url="${esc(inf.url && !/\/(login|consent)/i.test(inf.url) ? x.url : x.url)}">
+            <td style="text-align:center"><input type="checkbox" data-pp-inc checked></td>
+            <td><input type="text" data-pp-outlet value="${esc(outletName(x.url, inf.site, x.text))}"></td>
+            <td><input type="text" data-pp-notes value="${esc(inf.title && inf.title !== inf.site ? inf.title : '')}" title="${esc(x.url)}"></td>
+            <td><select data-pp-sec>${opts.map(o => `<option value="${esc(o.value)}"${o.value === g ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select></td></tr>`; }).join('')}
+          </tbody></table></div><p class="hint" style="margin-top:6px">${uniq.length} link${uniq.length === 1 ? '' : 's'}. Check the sections, then click “Add to sections”. Links already in a section are skipped.</p>`;
+      };
+      if (targetIdx == null && !d.press_sections.length) $('#pp-status').textContent = 'Tip: sections are created for you if you don’t have any yet.';
     }
 
     function pasteTour() {
@@ -876,13 +1023,13 @@
       section('Retail &amp; digital marketing', lines([has(d.retail) && `<b>Retail.</b> ${linkify(d.retail)}`, has(d.digital) && `<b>Digital.</b> ${linkify(d.digital)}`])),
       section('Digital playlisting', lines(d.playlists.filter(x => has(x.name)).map(x => `${x.dsp ? esc(x.dsp) + dot : ''}<b>${a(x.url, x.name)}</b>${x.status ? ' ' + muted('(' + esc(x.status) + ')') : ''}${x.notes ? dot + esc(x.notes) : ''}`))),
       section('Press', (() => {
-        const items = d.press.filter(x => has(x.outlet) || FP.safeUrl(x.url));
-        const groupOf = x => x.campaign === 'Single' ? `Single${has(x.single) ? ' — ' + x.single : ''}` : x.campaign || 'Other';
-        const order = g => g.startsWith('Album') ? 0 : g.startsWith('Single') ? 1 : g === 'Tour' ? 2 : 3;
-        const groups = [...new Set(items.map(groupOf))].sort((a, b) => order(a) - order(b) || a.localeCompare(b));
+        // Sections in the order the team added them (Single 1, Single 2, Album, Tour…).
         const line = x => `<b>${a(x.url, x.outlet || shortUrl(x.url))}</b>${x.notes ? dot + esc(x.notes) : ''}`;
-        return groups.map(g => para(`<span style="font-size:8pt;font-weight:bold;color:${C.muted}">${esc(g).toUpperCase()}</span>`, 'margin-top:6pt') + lines(items.filter(x => groupOf(x) === g).map(line))).join('')
-          + (has(d.press_previous) ? para(`<b>Previous press.</b> ${linkify(d.press_previous)}`, 'margin-top:6pt') : '');
+        return d.press_sections.map(sc => {
+          const items = sc.items.filter(x => has(x.outlet) || FP.safeUrl(x.url));
+          if (!items.length) return '';
+          return para(`<span style="font-size:8pt;font-weight:bold;color:${C.muted}">${esc(sc.type + (sc.name ? ' — ' + sc.name : '')).toUpperCase()}</span>`, 'margin-top:6pt') + lines(items.map(line));
+        }).join('') + (has(d.press_previous) ? para(`<b>Previous press.</b> ${linkify(d.press_previous)}`, 'margin-top:6pt') : '');
       })()),
       section('Radio', has(d.radio) ? para(linkify(d.radio)) : ''),
       section('Syncs', has(d.syncs) ? para(linkify(d.syncs)) : ''),
