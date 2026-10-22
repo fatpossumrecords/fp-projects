@@ -107,7 +107,7 @@
       // Project Info and Budget both edit the project itself, so they share the Save bar.
       $('#pe-save').classList.toggle('hidden', !['info', 'budget'].includes(tab));
       if (tab === 'info') FP.projectInfo.render($('#pe-body'), proj, ro, () => { drawTitle(); setDirty(); }, { pullTour });
-      if (tab === 'budget') FP.budget.render($('#pe-body'), proj, ro, setDirty);
+      if (tab === 'budget') FP.budget.render($('#pe-body'), proj, ro, setDirty, { pushSheet });
       if (tab === 'dates') renderDates($('#pe-body'), proj);
       if (tab === 'social') renderProjectSocial($('#pe-body'), proj);
     };
@@ -151,6 +151,22 @@
         if (e.status !== 409) FP.toast(e.message, true);
         return false;
       } finally { if (btn) btn.disabled = false; }
+    }
+
+    // Budget → its own Google Sheet. Drive permission is asked for first, inside the
+    // click (so the popup isn't blocked), then pending edits are saved and the sheet written.
+    async function pushSheet() {
+      if (isNew) return FP.toast('Create the project first', true);
+      const token = driveToken(); token.catch(() => {});
+      if (page.dirty && !(await save())) return;
+      try {
+        const r = await writeBudgetSheet(proj, await token);
+        proj.data.budget_sheet = { id: r.id, tab: r.tab, url: r.url, updated: new Date().toISOString() };
+        const saved = await FP.saveRecord('projects', proj, { data: proj.data });
+        proj = saved; proj.data = FP.projectInfo.normalize(proj.data); original = JSON.stringify(proj); setDirty();
+        drawTab();
+        FP.toast(r.created ? 'Google Sheet created. It’s only visible to you until you share it.' : 'Google Sheet updated');
+      } catch (e) { FP.toast(e.message, true); }
     }
 
     // Saves pending edits first, then the server merges Chartmetric listings into the stored tour list.
@@ -405,6 +421,35 @@
       });
       client.requestAccessToken({ prompt: '' });
     });
+  }
+
+  async function writeBudgetSheet(proj, token) {
+    const H = { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' };
+    const sheetErr = async (r, what) => {
+      const t = await r.text();
+      if (/SERVICE_DISABLED|has not been used|is disabled/i.test(t)) return new Error('The Google Sheets API isn’t turned on for this app yet. An admin needs to enable it in Google Cloud (APIs & Services → Library → Google Sheets API).');
+      return new Error(`Google Sheet ${what} failed: ${t.slice(0, 200)}`);
+    };
+    const existing = proj.data.budget_sheet;
+    if (existing?.id && existing.tab != null) {
+      const r = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${existing.id}:batchUpdate`, {
+        method: 'POST', headers: H, body: JSON.stringify({ requests: [
+          { updateCells: { range: { sheetId: existing.tab }, fields: 'userEnteredValue,userEnteredFormat' } },          // clear
+          { updateCells: { start: { sheetId: existing.tab, rowIndex: 0, columnIndex: 0 }, rows: FP.budget.sheetRows(proj), fields: 'userEnteredValue,userEnteredFormat' } },
+          { updateSpreadsheetProperties: { properties: { title: `${proj.artist} — ${proj.title} (Budget)` }, fields: 'title' } },
+        ] }),
+      });
+      if (r.ok) return { id: existing.id, tab: existing.tab, url: existing.url };
+      if (r.status !== 404 && r.status !== 403) throw await sheetErr(r, 'update');
+      if (!confirm('The existing budget sheet could not be found (it may have been deleted, or was created by someone else). Create a new one?')) throw new Error('Cancelled');
+    }
+    const r = await fetch('https://sheets.googleapis.com/v4/spreadsheets', { method: 'POST', headers: H, body: JSON.stringify(FP.budget.sheetSpec(proj)) });
+    if (!r.ok) throw await sheetErr(r, 'creation');
+    const sh = await r.json();
+    // File it in the project docs folder when one is set (best effort).
+    const folder = FP.state.settings.drive_folder_id;
+    if (folder) await fetch(`https://www.googleapis.com/drive/v3/files/${sh.spreadsheetId}?addParents=${encodeURIComponent(folder)}&supportsAllDrives=true`, { method: 'PATCH', headers: H, body: '{}' }).catch(() => {});
+    return { id: sh.spreadsheetId, tab: sh.sheets?.[0]?.properties?.sheetId ?? 0, url: sh.spreadsheetUrl, created: true };
   }
 
   async function writeGoogleDoc(proj, token) {

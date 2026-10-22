@@ -40,7 +40,7 @@
   const sum = (lines, f) => lines.reduce((t, l) => t + f(l), 0);
   const totals = lines => { const b = sum(lines, budgeted), p = sum(lines, l => num(l.paid)); return { b, p, r: b - p }; };
 
-  function render(box, proj, ro, onChange) {
+  function render(box, proj, ro, onChange, hooks = {}) {
     // Fresh node each render so delegated listeners don't stack.
     const fresh = box.cloneNode(false); box.replaceWith(fresh); box = fresh;
     // A project with no budget yet shows the template, but it's only stored once
@@ -102,7 +102,12 @@
     };
 
     const draw = () => {
-      box.innerHTML = `<div id="bd-summary">${summary()}</div>
+      const sheet = proj.data.budget_sheet;
+      box.innerHTML = `<div class="toolbar" style="margin-bottom:10px">
+          ${FP.safeUrl(sheet?.url) ? `<a class="btn btn-sm" href="${esc(sheet.url)}" target="_blank" rel="noopener">Open Google Sheet ↗</a>` : ''}
+          ${!ro && hooks.pushSheet ? `<button class="btn btn-sm" data-push-sheet>${sheet?.id ? 'Update Google Sheet' : 'Create Google Sheet'}</button>` : ''}
+          <span class="hint">${sheet?.updated ? `Sheet last updated ${new Date(sheet.updated).toLocaleString()}. ` : ''}The sheet keeps working formulas; editing it there doesn't change the app, and an update replaces it.</span></div>
+        <div id="bd-summary">${summary()}</div>
         ${AREAS.map(([area, label]) => {
           const gs = bd.groups.map((g, i) => [g, i]).filter(([g]) => g.area === area);
           return gs.length ? `<h3 style="font-size:11px;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-muted);margin:16px 0 8px">${label}</h3>${gs.map(([g, i]) => groupBox(g, i)).join('')}` : '';
@@ -141,6 +146,7 @@
     });
     box.addEventListener('click', e => {
       const t = e.target.closest('button'); if (!t) return;
+      if (t.matches('[data-push-sheet]')) { t.disabled = true; Promise.resolve(hooks.pushSheet()).finally(() => { t.disabled = false; }); return; }
       if (t.dataset.addLine !== undefined) {
         const g = bd.groups[+t.dataset.addLine];
         g.lines.push(g.area === 'manufacturing' ? { key: key(), account: '', qty: '', unit_cost: '', budgeted: '', paid: '', notes: '' } : { key: key(), account: '', budgeted: '', paid: '', notes: '' });
@@ -171,5 +177,69 @@
     draw();
   }
 
-  FP.budget = { render, template, totals: b => totals((b?.groups || []).flatMap(g => g.lines)) };
+  // ── GOOGLE SHEET ───────────────────────────────────────────
+  // Rows for the Sheets API, with live formulas so the sheet keeps working on its own:
+  // Remaining = Budgeted − Paid, Qty × Unit cost, category / area / grand totals.
+  function sheetRows(proj) {
+    const bd = proj.data.budget && Array.isArray(proj.data.budget.groups) ? proj.data.budget : template();
+    const CUR = '"$"#,##0.00;[Red]-"$"#,##0.00';
+    const fmt = (o = {}) => ({ textFormat: { bold: !!o.bold, fontSize: o.size || 10, foregroundColor: o.muted ? { red: .48, green: .45, blue: .41 } : undefined },
+      ...(o.bg ? { backgroundColor: o.bg } : {}), ...(o.cur ? { numberFormat: { type: 'CURRENCY', pattern: CUR } } : {}), ...(o.num ? { numberFormat: { type: 'NUMBER', pattern: '#,##0' } } : {}) });
+    const S = (v, o) => ({ userEnteredValue: { stringValue: String(v ?? '') }, userEnteredFormat: fmt(o) });
+    const N = (v, o) => (v === '' || v == null || !Number.isFinite(Number(v))) ? S('', o) : { userEnteredValue: { numberValue: Number(v) }, userEnteredFormat: fmt(o) };
+    const F = (f, o) => ({ userEnteredValue: { formulaValue: f }, userEnteredFormat: fmt(o) });
+    const shade = { red: .95, green: .94, blue: .92 }, band = { red: .99, green: .93, blue: .92 };
+    const rows = [];
+    const push = cells => { rows.push({ values: cells }); return rows.length; };   // returns the 1-based row number
+
+    push([S(`${proj.artist} — ${proj.title} · Budget`, { bold: true, size: 14 })]);
+    push([S(`Fat Possum Records · updated ${new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })} from the project system`, { muted: true })]);
+    push([]);
+    push(['Account', 'Qty', 'Unit cost', 'Budgeted', 'Paid', 'Remaining', 'Notes'].map(h => S(h, { bold: true, bg: shade })));
+    const areaTotals = [];
+    for (const [area, label] of AREAS) {
+      const groups = bd.groups.filter(g => g.area === area);
+      if (!groups.length) continue;
+      push([S(label.toUpperCase(), { bold: true, bg: band }), ...Array(6).fill(S('', { bg: band }))]);
+      const groupTotals = [];
+      for (const g of groups) {
+        push([S(g.name, { bold: true })]);
+        const first = rows.length + 1;
+        for (const l of g.lines) {
+          const r = rows.length + 1;
+          const hasQty = l.qty !== '' && l.qty != null && l.unit_cost !== '' && l.unit_cost != null;
+          push([S('   ' + (l.account || '')), N(l.qty, { num: true }), N(l.unit_cost, { cur: true }),
+            hasQty ? F(`=B${r}*C${r}`, { cur: true }) : N(l.budgeted === '' ? 0 : l.budgeted, { cur: true }),
+            N(l.paid === '' ? 0 : l.paid, { cur: true }), F(`=D${r}-E${r}`, { cur: true }), S(l.notes)]);
+        }
+        const last = rows.length;
+        const t = rows.length + 1;
+        push([S('Total ' + g.name, { bold: true }), S(''), S(''),
+          F(last >= first ? `=SUM(D${first}:D${last})` : '=0', { cur: true, bold: true }), F(last >= first ? `=SUM(E${first}:E${last})` : '=0', { cur: true, bold: true }),
+          F(`=D${t}-E${t}`, { cur: true, bold: true }), S('')]);
+        groupTotals.push(t);
+      }
+      const at = rows.length + 1;
+      const sumOf = col => '=' + groupTotals.map(r => col + r).join('+');
+      push([S(label + ' total', { bold: true, bg: shade }), S('', { bg: shade }), S('', { bg: shade }), F(sumOf('D'), { cur: true, bold: true, bg: shade }), F(sumOf('E'), { cur: true, bold: true, bg: shade }), F(`=D${at}-E${at}`, { cur: true, bold: true, bg: shade }), S('', { bg: shade })]);
+      push([]);
+      areaTotals.push(at);
+    }
+    const gt = rows.length + 1;
+    const sumAreas = col => areaTotals.length ? '=' + areaTotals.map(r => col + r).join('+') : '=0';
+    push([S('GRAND TOTAL', { bold: true, size: 11 }), S(''), S(''), F(sumAreas('D'), { cur: true, bold: true, size: 11 }), F(sumAreas('E'), { cur: true, bold: true, size: 11 }), F(`=D${gt}-E${gt}`, { cur: true, bold: true, size: 11 }), S('')]);
+    return rows;
+  }
+
+  function sheetSpec(proj) {
+    return {
+      properties: { title: `${proj.artist} — ${proj.title} (Budget)` },
+      sheets: [{
+        properties: { title: 'Budget', gridProperties: { frozenRowCount: 4 } },
+        data: [{ startRow: 0, startColumn: 0, rowData: sheetRows(proj), columnMetadata: [280, 70, 90, 110, 110, 120, 260].map(pixelSize => ({ pixelSize })) }],
+      }],
+    };
+  }
+
+  FP.budget = { render, template, sheetSpec, sheetRows, totals: b => totals((b?.groups || []).flatMap(g => g.lines)) };
 })();
