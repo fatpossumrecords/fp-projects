@@ -187,6 +187,39 @@ await A('PUT', '/api/projects/' + tp5.id, { data: p5.data, _expected_updated_at:
 const t5b = (await A('POST', `/api/projects/${tp5.id}/tour/pull`)).project.data.tour;
 ok(t5b.length === 2 && !t5b.some(t => t.ext_id === 'cm:9'), 'a deleted pulled show is not added back');
 
+// 14. one event per release date for all formats
+const gp = await A('POST', '/api/projects', { artist: 'Honey', title: 'LP2', release_date: '2027-04-09', data: { formats: [{ key: 'g1', format: 'LP', catalog: 'FP1' }, { key: 'g2', format: 'CD', catalog: 'FP2' }, { key: 'g3', format: 'Digital Album' }] } });
+let grows = await A('GET', '/api/releases?project_id=' + gp.id);
+const gid = grows[0].gcal_event_id;
+ok(grows.length === 3 && grows.every(r => r.gcal_event_id === gid) && cals.REL.get(gid).summary === 'Honey — LP2 [LP / CD / Digital Album]', 'three formats on one date share one event');
+ok(cals.REL.get(gid).description.startsWith('LP — FP1\nCD — FP2\nDigital Album'), 'event description lists each format with its cat #');
+const gev = cals.REL.get(gid); gev.start = { date: '2027-04-16' }; touch('REL', gev);
+await A('POST', '/api/sync');
+grows = await A('GET', '/api/releases?project_id=' + gp.id);
+ok(grows.every(r => r.release_date === '2027-04-16'), 'moving the shared event in Google moves every format');
+const gpd = await A('GET', '/api/projects/' + gp.id);
+ok(gpd.data.formats.every(f => !f.release_date || f.release_date === '2027-04-16'), 'and writes the new date back to the project');
+const cd = grows.find(r => r.format === 'CD');
+await A('PUT', '/api/releases/' + cd.id, { release_date: '2027-05-01' });
+grows = await A('GET', '/api/releases?project_id=' + gp.id);
+const cdRow = grows.find(r => r.format === 'CD'), lpRow = grows.find(r => r.format === 'LP');
+ok(cdRow.gcal_event_id !== lpRow.gcal_event_id && cals.REL.get(lpRow.gcal_event_id).summary === 'Honey — LP2 [LP / Digital Album]' && cals.REL.get(cdRow.gcal_event_id).summary === 'Honey — LP2 [CD]', 'giving one format its own date splits it into its own event');
+await A('PUT', '/api/releases/' + cdRow.id, { release_date: '2027-04-16' });
+grows = await A('GET', '/api/releases?project_id=' + gp.id);
+ok(new Set(grows.map(r => r.gcal_event_id)).size === 1 && cals.REL.get(cdRow.gcal_event_id).status === 'cancelled', 'moving it back re-joins the shared event and removes the extra one');
+await A('DELETE', '/api/releases/' + grows.find(r => r.format === 'Digital Album').id);
+ok(cals.REL.get(grows[0].gcal_event_id).summary === 'Honey — LP2 [LP / CD]' && cals.REL.get(grows[0].gcal_event_id).status === 'confirmed', 'deleting one format updates the shared event instead of removing it');
+// one-time regroup of events created one-per-format before this change
+const lr1 = await A('POST', '/api/releases', { artist: 'Old', title: 'Way', format: 'LP', release_date: '2027-06-06' });
+const lr2 = await A('POST', '/api/releases', { artist: 'Old', title: 'Way', format: 'CD', release_date: '2027-06-06' });
+const e1 = 'old-e1', e2 = 'old-e2';
+for (const [e, f] of [[e1, 'LP'], [e2, 'CD']]) { cals.REL.set(e, { id: e, status: 'confirmed', summary: 'Old — Way [' + f + ']', start: { date: '2027-06-06' } }); }
+await env.DB.batch([env.DB.prepare('UPDATE releases SET gcal_event_id = ? WHERE id = ?').bind(e1, lr1.id), env.DB.prepare('UPDATE releases SET gcal_event_id = ? WHERE id = ?').bind(e2, lr2.id),
+  env.DB.prepare("DELETE FROM sync_state WHERE key = 'release_regroup_v1'")]);
+for (let i = 0; i < 8; i++) await A('POST', '/api/sync');
+const o1 = await A('GET', '/api/releases/' + lr1.id), o2 = await A('GET', '/api/releases/' + lr2.id);
+ok(o1.gcal_event_id === o2.gcal_event_id && cals.REL.get(o1.gcal_event_id).summary === 'Old — Way [LP / CD]' && [e1, e2].filter(e => cals.REL.get(e).status === 'cancelled').length === 1, 'existing one-per-format events are merged and the spare removed');
+
 // 13. shared calendar: other people's events are never imported or touched
 env.CAL_RELEASES_SHARED = 'true';
 const before13 = (await A('GET', '/api/releases')).length;

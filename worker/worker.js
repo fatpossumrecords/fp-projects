@@ -429,7 +429,8 @@ async function deleteRow(res, cfg, id, user, env, ctx) {
       await patchRow(TABLES.projects, p.id, { data: JSON.stringify(p.data) }, user, env);
     }
   }
-  if (cfg.cal && row.gcal_event_id) ctx.waitUntil(deleteEvent(env, cfg.cal, row.gcal_event_id));
+  if (cfg.cal === 'release' && row.gcal_event_id) ctx.waitUntil(releaseEventLeft(env, row.id, row.gcal_event_id).catch(e => logSync(env, 'error', 'release delete: ' + e.message)));
+  else if (cfg.cal && row.gcal_event_id) ctx.waitUntil(deleteEvent(env, cfg.cal, row.gcal_event_id));
   if (res === 'projects') {
     const ms = await env.DB.prepare('SELECT gcal_event_id FROM milestones WHERE project_id = ? AND gcal_event_id IS NOT NULL').bind(id).all();
     // Timeline items mean nothing without their project; format rows stay on the schedule.
@@ -545,7 +546,7 @@ async function syncProjectReleases(projectId, user, env, ctx) {
   }
   for (const gone of Object.values(byKey)) {
     await env.DB.prepare('DELETE FROM releases WHERE id = ?').bind(gone.id).run();
-    if (gone.gcal_event_id) ctx.waitUntil(deleteEvent(env, 'release', gone.gcal_event_id));
+    if (gone.gcal_event_id) await releaseEventLeft(env, gone.id, gone.gcal_event_id).catch(e => logSync(env, 'error', 'release delete: ' + e.message));
   }
   ctx.waitUntil(pushMany(env, 'release', touched));
   // Milestone event titles include the artist name.
@@ -698,19 +699,89 @@ async function logSync(env, level, msg) {
   try { await env.DB.prepare('INSERT INTO sync_log (level, msg) VALUES (?, ?)').bind(level, String(msg).slice(0, 1000)).run(); } catch { /* logging must not throw */ }
 }
 
-function releaseEvent(r, env) {
+// One calendar event per release date: formats of the same title on the same day
+// share an event, e.g. "Honeyglaze — LP2 [LP / CD / Digital Album]".
+function releaseEvent(members, env) {
+  members = [].concat(members);
+  const r = members[0];
+  const formats = [...new Set(members.map(m => m.format).filter(Boolean))];
+  const multi = members.length > 1;
   const lines = [
+    ...(multi ? members.map(m => `${m.format || 'Release'}${m.catalog ? ' — ' + m.catalog : ''}`) : []),
+    multi && '',
     r.status && `Status: ${r.status}`, r.pm && `PM: ${r.pm}`, r.territory && `Territory: ${r.territory}`,
-    r.label && `Label: ${r.label}`, r.catalog && `Cat #: ${r.catalog}`, r.notes,
+    r.label && `Label: ${r.label}`, !multi && r.catalog && `Cat #: ${r.catalog}`,
+    ...[...new Set(members.map(m => m.notes).filter(Boolean))],
     env.APP_URL && `\n${env.APP_URL}#/releases?id=${r.id}`,
-  ].filter(Boolean);
+  ].filter(x => x !== false && x !== null && x !== undefined);
   return {
-    summary: `${r.artist}${SEP}${r.title}${r.format ? ` [${r.format}]` : ''}`,
-    description: lines.join('\n'),
+    summary: `${r.artist}${SEP}${r.title}${formats.length ? ` [${formats.join(' / ')}]` : ''}`,
+    description: lines.join('\n').replace(/^\n+/, ''),
     start: { date: r.release_date }, end: { date: addDays(r.release_date, 1) },
     transparency: 'transparent',
-    extendedProperties: { private: { fpType: 'release', fpId: r.id } },
+    extendedProperties: { private: { fpType: 'release', fpId: r.id, fpIds: members.map(m => m.id).join(',').slice(0, 1000) } },
   };
+}
+
+// The rows that share this row's calendar event: same project (or artist when not
+// linked to one), same title, same date. Timeline items always get their own event.
+async function releaseGroup(env, r) {
+  if (!r.release_date || r.kind === 'timeline') return [r];
+  const q = r.project_id
+    ? env.DB.prepare("SELECT * FROM releases WHERE release_date = ?1 AND (kind IS NULL OR kind = 'format') AND project_id = ?2 AND title = ?3 COLLATE NOCASE ORDER BY rowid").bind(r.release_date, r.project_id, r.title)
+    : env.DB.prepare("SELECT * FROM releases WHERE release_date = ?1 AND (kind IS NULL OR kind = 'format') AND project_id IS NULL AND artist = ?2 COLLATE NOCASE AND title = ?3 COLLATE NOCASE ORDER BY rowid").bind(r.release_date, r.artist, r.title);
+  const rows = (await q.all()).results;
+  return rows.length ? rows : [r];
+}
+
+const eventUsers = async (env, eventId) => (await env.DB.prepare('SELECT id FROM releases WHERE gcal_event_id = ?').bind(eventId).all()).results.map(x => x.id);
+
+// Pushes the event for this row's group, merging or splitting events as dates change.
+// Returns the ids it covered so callers can skip the rest of the group.
+async function pushRelease(env, id, depth = 0) {
+  const r = await env.DB.prepare('SELECT * FROM releases WHERE id = ?').bind(id).first();
+  if (!r) return [];
+  if (!r.release_date) {
+    if (r.gcal_event_id) await releaseEventLeft(env, r.id, r.gcal_event_id, depth);
+    return [r.id];
+  }
+  const members = await releaseGroup(env, r);
+  const ids = members.map(m => m.id);
+  // Reuse a member's event only if nothing outside this group still points at it.
+  let eventId = null;
+  for (const m of members) {
+    if (!m.gcal_event_id || eventId) continue;
+    if ((await eventUsers(env, m.gcal_event_id)).every(u => ids.includes(u))) eventId = m.gcal_event_id;
+  }
+  const event = releaseEvent(members, env);
+  if (eventId) {
+    const res = await gcal(env, 'release', 'PUT', '/' + encodeURIComponent(eventId), { payload: event });
+    if (res.status === 404 || res.status === 410) eventId = null;
+    else if (res.status >= 300) throw new Error(`update ${res.status}: ${JSON.stringify(res.data).slice(0, 300)}`);
+  }
+  if (!eventId) {
+    const res = await gcal(env, 'release', 'POST', '', { payload: event });
+    if (res.status >= 300) throw new Error(`insert ${res.status}: ${JSON.stringify(res.data).slice(0, 300)}`);
+    eventId = res.data.id;
+  }
+  const previous = [...new Set(members.map(m => m.gcal_event_id).filter(x => x && x !== eventId))];
+  await env.DB.batch(ids.map(i => env.DB.prepare('UPDATE releases SET gcal_event_id = ? WHERE id = ?').bind(eventId, i)));
+  // Events the group's rows used before: delete if now unused, else re-render for whoever is left.
+  for (const old of previous) {
+    const left = await eventUsers(env, old);
+    if (!left.length) await deleteEvent(env, 'release', old);
+    else if (depth < 3) await pushRelease(env, left[0], depth + 1);
+  }
+  return ids;
+}
+
+// A row stopped using an event (lost its date, or was deleted): the event goes if
+// nobody else uses it, otherwise it's re-rendered for the remaining formats.
+async function releaseEventLeft(env, rowId, eventId, depth = 0) {
+  await env.DB.prepare('UPDATE releases SET gcal_event_id = NULL WHERE id = ?').bind(rowId).run();
+  const left = await eventUsers(env, eventId);
+  if (!left.length) await deleteEvent(env, 'release', eventId);
+  else if (depth < 3) await pushRelease(env, left[0], depth + 1);
 }
 
 function milestoneEvent(m, artist, env) {
@@ -724,11 +795,19 @@ function milestoneEvent(m, artist, env) {
 }
 
 async function pushMany(env, kind, ids) {
-  for (const id of ids) await pushRecord(env, kind, id);
+  const done = new Set();
+  for (const id of ids) {
+    if (done.has(id)) continue;
+    for (const c of await pushRecord(env, kind, id) || []) done.add(c);
+  }
 }
 
 async function pushRecord(env, kind, id) {
   if (!calEnabled(env, kind)) return;
+  if (kind === 'release') {
+    try { return await pushRelease(env, id); }
+    catch (e) { await logSync(env, 'error', `push release ${id}: ${e.message}`); return [id]; }
+  }
   try {
     const table = kind === 'release' ? 'releases' : 'milestones';
     const row = await env.DB.prepare(`SELECT * FROM ${table} WHERE id = ?`).bind(id).first();
@@ -741,12 +820,8 @@ async function pushRecord(env, kind, id) {
       }
       return;
     }
-    let event;
-    if (kind === 'release') event = releaseEvent(row, env);
-    else {
-      const p = row.project_id ? await env.DB.prepare('SELECT artist FROM projects WHERE id = ?').bind(row.project_id).first() : null;
-      event = milestoneEvent(row, p?.artist, env);
-    }
+    const p = row.project_id ? await env.DB.prepare('SELECT artist FROM projects WHERE id = ?').bind(row.project_id).first() : null;
+    const event = milestoneEvent(row, p?.artist, env);
     if (row.gcal_event_id) {
       const r = await gcal(env, kind, 'PUT', '/' + encodeURIComponent(row.gcal_event_id), { payload: event });
       if (r.status < 300) return;
@@ -828,8 +903,8 @@ async function pullCalendar(env, kind) {
           await env.DB.prepare('DELETE FROM milestones WHERE id = ?').bind(row.id).run();
           await logSync(env, 'info', `milestone "${row.title}" deleted in Google Calendar — removed from app`);
         } else {
-          await env.DB.prepare('UPDATE releases SET gcal_event_id = NULL WHERE id = ?').bind(row.id).run();
-          await logSync(env, 'warn', `release "${row.artist} — ${row.title}" was deleted in Google Calendar. Kept in app; edit it to re-create the event.`);
+          await env.DB.prepare('UPDATE releases SET gcal_event_id = NULL WHERE gcal_event_id = ?').bind(ev.id).run();
+          await logSync(env, 'warn', `release "${row.artist} — ${row.title}" was deleted in Google Calendar. Kept in app; it's re-created on the next sync.`);
         }
         changed++;
         continue;
@@ -858,18 +933,38 @@ async function pullCalendar(env, kind) {
         continue;
       }
 
+      if (kind === 'release') {
+        // Everything sharing this event (a release's formats) moves together.
+        const members = row.gcal_event_id === ev.id
+          ? (await env.DB.prepare('SELECT * FROM releases WHERE gcal_event_id = ? ORDER BY rowid').bind(ev.id).all()).results : [row];
+        const latest = members.map(m => m.updated_at || '').sort().at(-1);
+        if (ev.updated && latest && ev.updated <= latest) continue;
+        const shared = {};
+        // Titles are only re-parsed when someone actually renamed the event;
+        // otherwise the app's own summary would round-trip through the parser.
+        const p = parseReleaseSummary(ev.summary);
+        if (ev.summary !== releaseEvent(members, env).summary && p.title !== '(from Google Calendar)') {
+          for (const k of ['artist', 'title']) if ((p[k] ?? null) !== (members[0][k] ?? null)) shared[k] = p[k];
+          if (members.length === 1 && (p.format ?? null) !== (row.format ?? null)) shared.format = p.format;
+        }
+        let touched = false;
+        for (const mrow of members) {
+          const fields = { ...shared };
+          if (date !== mrow.release_date) fields.release_date = date;
+          if (ev.id !== mrow.gcal_event_id) fields.gcal_event_id = ev.id;
+          if (!Object.keys(fields).length) continue;
+          await patchRow({ table }, mrow.id, fields, SYSTEM, env, ev.updated || now());
+          await writeThroughFormat(mrow.id, SYSTEM, env);
+          touched = true;
+        }
+        if (touched) { await logSync(env, 'info', `release updated from Google Calendar: ${ev.summary}`); changed++; }
+        continue;
+      }
       // Only accept Google's version if it was edited after the app's last save.
       if (ev.updated && row.updated_at && ev.updated <= row.updated_at) continue;
       const fields = {};
       if (date !== row[dateCol]) fields[dateCol] = date;
-      // Titles are only re-parsed when someone actually renamed the event;
-      // otherwise the app's own summary would round-trip through the parser.
-      if (kind === 'release') {
-        const p = parseReleaseSummary(ev.summary);
-        if (ev.summary !== releaseEvent(row, env).summary && p.title !== '(from Google Calendar)') {
-          for (const k of ['artist', 'title', 'format']) if ((p[k] ?? null) !== (row[k] ?? null)) fields[k] = p[k];
-        }
-      } else {
+      {
         const proj = row.project_id ? await env.DB.prepare('SELECT artist FROM projects WHERE id = ?').bind(row.project_id).first() : null;
         if (ev.summary !== milestoneEvent(row, proj?.artist, env).summary) {
           const p = parseMilestoneSummary(ev.summary, proj?.artist);
@@ -880,7 +975,6 @@ async function pullCalendar(env, kind) {
       if (ev.id !== row.gcal_event_id) fields.gcal_event_id = ev.id;
       if (Object.keys(fields).length) {
         await patchRow({ table }, row.id, fields, SYSTEM, env, ev.updated || now());
-        if (kind === 'release') await writeThroughFormat(row.id, SYSTEM, env);
         await logSync(env, 'info', `${kind} updated from Google Calendar: ${ev.summary} (${Object.keys(fields).join(', ')})`);
         changed++;
       }
@@ -895,6 +989,23 @@ async function pullCalendar(env, kind) {
   return changed;
 }
 
+// One-time: events made before formats were grouped get merged, a few rows per run.
+async function regroupReleaseEvents(env) {
+  const st = await env.DB.prepare("SELECT value FROM sync_state WHERE key = 'release_regroup_v1'").first();
+  if (st?.value === 'done') return;
+  let todo = st ? JSON.parse(st.value) : (await env.DB.prepare("SELECT id FROM releases WHERE gcal_event_id IS NOT NULL AND (kind IS NULL OR kind = 'format') ORDER BY release_date").all()).results.map(r => r.id);
+  const done = new Set();
+  let n = 0;
+  while (todo.length && n < 3) {
+    const id = todo.shift();
+    if (done.has(id)) continue;
+    for (const c of await pushRelease(env, id).catch(() => [id])) done.add(c);
+    n++;
+  }
+  todo = todo.filter(id => !done.has(id));
+  await env.DB.prepare("INSERT INTO sync_state (key, value) VALUES ('release_regroup_v1', ?1) ON CONFLICT(key) DO UPDATE SET value = ?1").bind(todo.length ? JSON.stringify(todo) : 'done').run();
+}
+
 async function runCalendarSync(env) {
   const summary = {};
   for (const kind of ['release', 'milestone']) {
@@ -905,6 +1016,7 @@ async function runCalendarSync(env) {
       const dateCol = kind === 'release' ? 'release_date' : 'date';
       const missing = await env.DB.prepare(`SELECT id FROM ${table} WHERE gcal_event_id IS NULL AND ${dateCol} IS NOT NULL LIMIT 40`).all();
       await pushMany(env, kind, missing.results.map(r => r.id));
+      if (kind === 'release') await regroupReleaseEvents(env);
       summary[kind] = { pushed: missing.results.length, pulled: await pullCalendar(env, kind) };
     } catch (e) {
       summary[kind] = 'error: ' + e.message;
