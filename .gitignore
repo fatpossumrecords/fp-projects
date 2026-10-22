@@ -4,3 +4,4 @@ node_modules/
 import/*.csv
 .claude/
 backup/
+.preview-*.json

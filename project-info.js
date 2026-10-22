@@ -46,6 +46,35 @@
     return `${g.diff > 0 ? '+' : g.diff < 0 ? '−' : '±'}${short}${g.pct != null ? ` (${g.diff >= 0 ? '+' : '−'}${Math.abs(g.pct).toFixed(1)}%)` : ''}${withSpan ? ' ' + g.span : ''}`;
   }
 
+  // Two rows are the same show when they share a date and the city name (before the
+  // comma) or the venue (ignoring "The", punctuation and & vs and).
+  const tourCityK = c => String(c || '').split(',')[0].trim().toLowerCase();
+  const tourVenueK = v => String(v || '').toLowerCase().replace(/\([^)]*\)/g, ' ').replace(/\s+(w\/|with)\s.*$/, '').replace(/&/g, ' and ').replace(/^the\s+/, '').replace(/[^a-z0-9]+/g, '');
+  const sameShow = (x, y) => x.date && x.date === y.date && ((x.city && tourCityK(x.city) === tourCityK(y.city)) || (x.venue && y.venue && tourVenueK(x.venue) === tourVenueK(y.venue)));
+  function tourDuplicates(rows) {
+    const groups = [], used = new Set();
+    rows.forEach((r, i) => {
+      if (used.has(i)) return;
+      const g = [i];
+      rows.forEach((o, j) => { if (j > i && !used.has(j) && sameShow(r, o)) g.push(j); });
+      if (g.length > 1) { g.forEach(k => used.add(k)); groups.push(g); }
+    });
+    return groups;
+  }
+  // Keep one row per show: the hand-entered wording (often more accurate) plus the
+  // Chartmetric link, tickets and cancelled flag. Marked manual so the daily
+  // refresh fills gaps but doesn't overwrite the corrected city / venue.
+  function mergeTourRows(rows) {
+    const linked = rows.find(r => r.ext_id), manual = rows.find(r => !r.ext_id) || rows[0];
+    const base = linked || rows[0];
+    let venue = manual.venue || base.venue || '';
+    const extra = venue.match(/\s*(\((?:w\/|with|support|supporting|opening)[^)]*\))$/i);
+    if (extra) venue = venue.slice(0, extra.index).trim();
+    return { ...base, city: manual.city || base.city, venue,
+      notes: [...rows.map(r => r.notes), extra?.[1]].filter(Boolean).sort((a, b) => b.length - a.length)[0] || '',
+      ticket_url: rows.map(r => r.ticket_url).find(Boolean) || '', announced: rows.some(r => r.announced), source: 'manual' };
+  }
+
   // Tour dates always read in date order; rows still waiting for a date go last.
   const sortTour = rows => rows.sort((a, b) => String(a.date || '9999').localeCompare(String(b.date || '9999')));
 
@@ -243,6 +272,9 @@
       const ci = parts.findIndex(p => /,/.test(p));
       if (ci > 0) parts.unshift(parts.splice(ci, 1)[0]);
       [city, venue, ...notes] = parts;
+      // "Massey Hall (with The Tallest Man On Earth)" → the support / headliner note goes to Notes.
+      const extra = venue && venue.match(/\s*(\((?:w\/|with|support|supporting|opening)[^)]*\)|\s(?:w\/|with)\s.+)$/i);
+      if (extra) { notes.unshift(extra[1].trim()); venue = venue.slice(0, extra.index).trim(); }
       notes = notes.join(' · ');
     } else if (parts.length === 1) {
       const c = parts[0].split(/\s*,\s*/);
@@ -477,6 +509,7 @@
       return `<div class="rep compact"><table>${head}<tbody>${upcoming.map(x => row(x.r, x.i)).join('') || `<tr><td colspan="6" class="hint" style="padding:6px">No upcoming dates.</td></tr>`}</tbody></table>
           ${ro ? '' : '<button class="btn btn-sm add" data-add="tour">+ Add date</button>'}</div>
         ${upcoming.length ? `<p class="hint" style="margin-top:4px">${live.filter(x => !x.r.announced).length} not announced · ${live.filter(x => x.r.announced).length} announced${upcoming.some(x => x.r.cancelled) ? ` · ${upcoming.filter(x => x.r.cancelled).length} cancelled` : ''}</p>` : ''}
+        ${(() => { const n = tourDuplicates(d.tour).length; return n && !ro ? `<p style="margin-top:6px"><button class="btn btn-sm" data-tour-dedupe>Merge ${n} duplicate show${n === 1 ? '' : 's'}</button> <span class="hint">Same date and city or venue listed twice (e.g. from Chartmetric and a paste).</span></p>` : ''; })()}
         ${d.tour_dismissed?.length ? `<p class="hint" style="margin-top:4px">${d.tour_dismissed.length} pulled show${d.tour_dismissed.length === 1 ? '' : 's'} removed by hand and won't be re-added.${ro ? '' : ' <a href="#" data-tour-restore>Allow them back</a>'}</p>` : ''}
         ${past.length ? `<details style="margin-top:8px"><summary class="hint" style="cursor:pointer;font-weight:600">Past tour dates (${past.length})</summary>
           <div class="rep compact" style="margin-top:4px"><table>${head}<tbody>${past.map(x => row(x.r, x.i)).join('')}</tbody></table></div></details>` : ''}`;
@@ -650,6 +683,14 @@
           || String(x.name || '').localeCompare(String(y.name || '')));
         refresh('team'); onChange();
         box.querySelector(`[data-team-sort="${k}"]`)?.classList.add('on');
+      }
+      if (t.matches('[data-tour-dedupe]')) {
+        const groups = tourDuplicates(d.tour);
+        const drop = new Set();
+        for (const g of groups) { d.tour[g[0]] = mergeTourRows(g.map(i => d.tour[i])); g.slice(1).forEach(i => drop.add(i)); }
+        d.tour = d.tour.filter((_, i) => !drop.has(i));
+        refresh('tour'); onChange();
+        FP.toast(`Merged ${groups.length} duplicate show${groups.length === 1 ? '' : 's'}. Save to keep it.`);
       }
       if (t.matches('[data-tour-restore]')) { e.preventDefault(); d.tour_dismissed = []; refresh('tour'); onChange(); FP.toast('They’ll come back on the next pull. Save to keep this.'); }
       if (t.matches('[data-pull-tour]')) { t.disabled = true; try { await hooks.pullTour(); } finally { t.disabled = false; } }
@@ -901,11 +942,9 @@
           const rows = parseTour(el.querySelector('#pt-text').value).filter(r => !r.error).map(r => ({ ...r, key: crypto.randomUUID().slice(0, 8), source: 'manual', announced: ann }));
           if (!rows.length) throw new Error('No dates found. Each line needs to start with a date.');
           // Same show if it's the same date and the same city (name before the comma) or venue.
-          const cityK = c => String(c || '').split(',')[0].trim().toLowerCase();
-          const venueK = v => String(v || '').toLowerCase().replace(/&/g, ' and ').replace(/^the\s+/, '').replace(/[^a-z0-9]+/g, '');
           let added = 0;
           for (const r of rows) {
-            const dup = d.tour.find(t => t.date === r.date && ((r.city && cityK(t.city) === cityK(r.city)) || (r.venue && t.venue && venueK(t.venue) === venueK(r.venue))));
+            const dup = d.tour.find(t => sameShow(r, t));
             if (dup) { if (ann && !dup.announced) dup.announced = true; continue; }
             d.tour.push(r); added++;
           }
@@ -985,11 +1024,12 @@
   }
 
   function buildDocHtml(p) {
-    // Page 1 is a one-sheet (pitch, release facts, tracklist, tour, links, contacts).
+    // Page 1 is a one-sheet (pitch, release facts, links, socials, contacts, tour).
     // Page 2 onward holds the working details. Layout columns are borderless tables,
     // because that's the only multi-column layout Google keeps when converting HTML.
+    // Only section labels are bold; content stays regular weight.
     const d = normalize(p.data);
-    const C = { ink: '#1c1a16', muted: '#7a7468', accent: '#b83228', rule: '#e4e0d8' };
+    const C = { ink: '#1c1a16', muted: '#7a7468', accent: '#b83228', rule: '#e4e0d8', up: '#1e7e4a' };
     const has = v => !blank(v);
     const txt = v => esc(v || '').replace(/\n/g, '<br>');
     const linkify = v => txt(v).replace(/(https?:\/\/[^\s<]+)/g, u => `<a href="${u}">${shortUrl(u)}</a>`);
@@ -998,23 +1038,25 @@
     const dot = ` ${muted('·')} `;
     const para = (html, extra = '') => `<p style="margin:0 0 3pt 0;line-height:1.35;${extra}">${html}</p>`;
     const lines = list => list.filter(Boolean).map(x => para(x)).join('');
+    // Lists (contacts, tour, press…): one item per line, no gap between lines.
+    const tight = list => list.filter(Boolean).map(x => `<p style="margin:0;line-height:1.3">${x}</p>`).join('');
     const label = t => `<p style="margin:12pt 0 3pt 0;font-size:8pt;font-weight:bold;color:${C.accent}">${t.toUpperCase()}</p>`;
     const block = (t, body) => body ? label(t) + body : '';
-    const h2 = t => `<h2 style="font-size:11pt;font-weight:bold;color:${C.accent};margin:16pt 0 4pt 0">${t}</h2>`;
-    const section = (t, body) => body ? h2(t) + body : '';
     const W = 'border:1px solid #ffffff';                         // invisible table borders
-    const cols = (...cells) => `<table style="border-collapse:collapse;width:100%;${W}"><tr>${cells.map(([w, html]) =>
-      `<td style="width:${w};vertical-align:top;padding:0 16pt 0 0;${W}">${html}</td>`).join('')}</tr></table>`;
+    const cols = (...cells) => `<table style="border-collapse:collapse;width:100%;${W}"><tr>${cells.map(([w, html], i) =>
+      `<td style="width:${w};vertical-align:top;padding:0 ${i === cells.length - 1 ? 0 : 16}pt 0 0;${W}">${html}</td>`).join('')}</tr></table>`;
     const date = v => v ? esc(FP.fmtDate(v, { month: 'short', day: 'numeric', year: 'numeric' })) : 'TBD';
     const longDate = v => v ? esc(FP.fmtDate(v, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })) : 'Release date TBD';
+    const gap = '&nbsp;&nbsp;&nbsp;';
 
     const tracks = d.tracks.filter(t => has(t.song));
     const formats = d.formats.filter(f => has(f.format) || has(f.title));
     const art = imageUrl(d.assets.album_art) || imageUrl(d.assets.single_art);
     const points = String(d.selling_points || '').split('\n').map(s => s.replace(/^[-•*]\s*/, '').trim()).filter(Boolean);
-    const tourLines = rows => lines(rows.filter(t => has(t.date) || has(t.city)).map(t =>
-      `<b>${t.date ? esc(FP.fmtDate(t.date, { weekday: 'short', month: 'short', day: 'numeric' })) : 'TBD'}</b>&nbsp;&nbsp;${esc(t.city || '')}${t.venue ? ' — ' + (FP.safeUrl(t.ticket_url) ? a(t.ticket_url, t.venue) : esc(t.venue)) : ''}${t.notes ? dot + esc(t.notes) : ''}${
-        t.cancelled ? ' ' + muted('(cancelled)') : !t.announced ? ` <b style="color:${C.accent}">· Not announced</b>` : ''}`));
+    const today = FP.today();
+    // Same compact line for upcoming and past shows: "Oct 23, 2026   Toronto, ON — Massey Hall"
+    const tourLine = t => `${date(t.date)}${gap}${esc(t.city || '')}${t.venue ? ' — ' + (FP.safeUrl(t.ticket_url) ? a(t.ticket_url, t.venue) : esc(t.venue)) : ''}${t.notes ? dot + esc(t.notes) : ''}${
+      t.cancelled ? ' ' + muted('(cancelled)') : t.date >= today && !t.announced ? ` <span style="color:${C.accent}">· Not announced</span>` : ''}`;
     const followerDates = Object.values(d.followers).map(f => f?.asof).filter(Boolean).sort();
     const timeline = [...formatTimeline(p), ...d.timeline.filter(t => has(t.item)), ...splitDatedLines(d.timeline_notes).dated]
       .sort((x, y) => String(x.date || '9').localeCompare(String(y.date || '9')));
@@ -1022,21 +1064,25 @@
     const assets = [['Project folder', d.assets.folder], ...ASSETS.map(([key, lab]) => [lab, d.assets[key]])].filter(([, u]) => FP.safeUrl(u));
     const smart = d.smart_links.filter(x => FP.safeUrl(x.url));
 
-    // Socials & streaming: one row per platform with followers and their change,
-    // so growth reads at a glance. Spotify gets followers and monthly listeners.
-    const hair = (html, { head, right, color } = {}) => `<td style="padding:3pt 10pt 3pt 0;border:1px solid #ffffff;border-bottom:1px solid ${C.rule};vertical-align:top;font-size:9pt;${right ? 'text-align:right;' : ''}${head ? `color:${C.muted};font-weight:bold;` : ''}${color ? `color:${color};` : ''}">${html}</td>`;
-    const statRows = [
-      ...SOCIALS.map(([key, l]) => ({ name: l, url: d.social[key], f: d.followers[key], unit: key === 'youtube' ? 'subscribers' : key === 'facebook' ? 'likes' : 'followers' })),
-      ...d.social_extra.map(x => ({ name: x.label || 'Link', url: x.url })),
-      ...DSPS.flatMap(([key, l]) => [{ name: l, url: d.dsp_links[key], f: d.followers[key], unit: key === 'deezer' ? 'fans' : 'followers' },
-        ...(key === 'spotify' && d.followers.spotify_listeners?.count != null ? [{ name: 'Spotify', url: d.dsp_links.spotify, f: d.followers.spotify_listeners, unit: 'monthly listeners' }] : [])]),
-      ...d.dsp_extra.map(x => ({ name: x.label || 'Link', url: x.url })),
-    ].filter(r => FP.safeUrl(r.url) || r.f?.count != null);
-    const anyCounts = statRows.some(r => r.f?.count != null);
-    const statsTable = statRows.length ? `<table style="border-collapse:collapse;width:100%;${W}">
-        ${anyCounts ? `<tr>${hair('Platform', { head: true })}${hair('Audience', { head: true, right: true })}${hair('', { head: true })}${hair('Change', { head: true, right: true })}</tr>` : ''}
-        ${statRows.map(r => { const g = growth(r.f); return `<tr>${hair(`<b>${a(r.url, r.name)}</b>`)}${hair(r.f?.count != null ? Number(r.f.count).toLocaleString('en-US') : muted('—'), { right: true })}${hair(r.f?.count != null ? muted(r.unit || '') : '')}${hair(g ? esc(growthText(g)) : '', { right: true, color: g ? (g.diff > 0 ? '#1e7e4a' : g.diff < 0 ? C.accent : C.muted) : '' })}</tr>`; }).join('')}
-      </table>${followerDates.length ? para(`<span style="font-size:8pt;color:${C.muted}">As of ${esc(FP.fmtDate(followerDates.at(-1)))}${statRows.some(r => r.f?.month != null) ? '; change is over the last 30 days (Chartmetric)' : ''}.</span>`, 'margin-top:3pt') : ''}` : '';
+    // Socials and DSPs as two compact side-by-side lists: name, audience, 30-day change.
+    const cell = (html, { head, right, color, size = 8.5 } = {}) => `<td style="padding:1.5pt 6pt 1.5pt 0;${W};border-bottom:1px solid ${C.rule};vertical-align:top;font-size:${size}pt;${right ? 'text-align:right;' : ''}${head ? `color:${C.muted};` : ''}${color ? `color:${color};` : ''}">${html}</td>`;
+    const statTable = rows => {
+      rows = rows.filter(r => FP.safeUrl(r.url) || r.f?.count != null);
+      if (!rows.length) return '';
+      return `<table style="border-collapse:collapse;width:100%;${W}">${rows.map(r => {
+        const g = growth(r.f);
+        return `<tr>${cell(a(r.url, r.name))}${cell(r.f?.count != null ? Number(r.f.count).toLocaleString('en-US') : '', { right: true })}${cell(g ? esc(growthText(g, { withSpan: false })) : '', { right: true, color: g ? (g.diff > 0 ? C.up : g.diff < 0 ? C.accent : C.muted) : '' })}</tr>`;
+      }).join('')}</table>`;
+    };
+    const socialRows = [...SOCIALS.map(([key, l]) => ({ name: key === 'youtube' ? 'YouTube (subscribers)' : key === 'facebook' ? 'Facebook (likes)' : l, url: d.social[key], f: d.followers[key] })),
+      ...d.social_extra.map(x => ({ name: x.label || 'Link', url: x.url }))];
+    const dspRows = [...DSPS.flatMap(([key, l]) => [{ name: l, url: d.dsp_links[key], f: d.followers[key] },
+        ...(key === 'spotify' && d.followers.spotify_listeners?.count != null ? [{ name: 'Spotify monthly listeners', url: d.dsp_links.spotify, f: d.followers.spotify_listeners }] : [])]),
+      ...d.dsp_extra.map(x => ({ name: x.label || 'Link', url: x.url }))];
+    const socialsT = statTable(socialRows), dspsT = statTable(dspRows);
+    const statsNote = followerDates.length ? `<p style="margin:3pt 0 0 0;font-size:7.5pt;color:${C.muted}">Audience as of ${esc(FP.fmtDate(followerDates.at(-1)))}${[...socialRows, ...dspRows].some(r => r.f?.month != null) ? '; change over the last 30 days (Chartmetric)' : ''}.</p>` : '';
+    const stats = socialsT || dspsT
+      ? cols(['50%', block('Socials', socialsT)], ['50%', block('Streaming', dspsT)]) + statsNote : '';
 
     // ── PAGE 1: ONE-SHEET ──
     const header = cols(['78%', `
@@ -1047,68 +1093,64 @@
 
     const left = [
       block('About', has(d.about) ? String(d.about).split(/\n\s*\n/).map(x => para(linkify(x), 'margin-bottom:6pt')).join('') : ''),
-      block('Selling points', points.length ? `<ul style="margin:0 0 0 14pt;padding:0">${points.map(x => `<li style="margin:0 0 2pt 0">${linkify(x)}</li>`).join('')}</ul>` : ''),
-      block('Focus tracks', has(d.focus_tracks) ? para(`<b>${esc(d.focus_tracks)}</b>`) : ''),
-      block('Tracklist', tracks.length ? `<ol style="margin:0 0 0 16pt;padding:0">${tracks.map(t => `<li style="margin:0 0 1pt 0">${esc(t.song)}${t.length ? ' ' + muted(esc(t.length)) : ''}</li>`).join('')}</ol>` : ''),
+      block('Selling points', points.length ? `<ul style="margin:0 0 0 14pt;padding:0">${points.map(x => `<li style="margin:0 0 1pt 0">${linkify(x)}</li>`).join('')}</ul>` : ''),
+      block('Focus tracks', has(d.focus_tracks) ? para(esc(d.focus_tracks)) : ''),
+      block('Tracklist', tracks.length ? `<ol style="margin:0 0 0 16pt;padding:0">${tracks.map(t => `<li style="margin:0">${esc(t.song)}${t.length ? ' ' + muted(esc(t.length)) : ''}</li>`).join('')}</ol>` : ''),
       block('For fans of', has(d.riyl) ? para(txt(d.riyl)) : ''),
       block('Press', has(d.press_quotes) ? para(`<i>${linkify(d.press_quotes)}</i>`) : ''),
     ].join('') || para(muted('Add “About this release” and selling points in the project’s One-sheet section.'));
 
     // Date, label and cat # are already in the header.
-    const facts = [['Territory', esc(p.territory)],
-      ['Genre', esc(d.genre)], ['Hometown', esc(d.hometown)], ['Website', FP.safeUrl(d.website) ? a(d.website) : '']].filter(([, v]) => v);
+    const facts = [['Territory', esc(p.territory)], ['Genre', esc(d.genre)], ['Hometown', esc(d.hometown)], ['Website', FP.safeUrl(d.website) ? a(d.website) : '']].filter(([, v]) => v);
     const right = [
       art ? `<p style="margin:0 0 8pt 0"><img src="${esc(art)}" width="200" height="200" alt="Album art"></p>` : '',
-      block('Details', facts.length ? lines(facts.map(([l, v]) => `${muted(l)}&nbsp;&nbsp;${v}`)) : ''),
-      block('Formats', lines(formats.map(f => `<b>${esc(f.format || 'Release')}</b>${f.title && f.title !== p.title ? ' — ' + esc(f.title) : ''}${f.release_date && f.release_date !== p.release_date ? dot + date(f.release_date) : ''}${f.catalog ? '<br>' + muted(esc(f.catalog) + (f.upc ? ' · UPC ' + esc(f.upc) : '')) : f.upc ? '<br>' + muted('UPC ' + esc(f.upc)) : ''}`))),
+      block('Details', facts.length ? tight(facts.map(([l, v]) => `${muted(l)}${gap}${v}`)) : ''),
+      block('Formats', lines(formats.map(f => `${esc(f.format || 'Release')}${f.title && f.title !== p.title ? ' — ' + esc(f.title) : ''}${f.release_date && f.release_date !== p.release_date ? dot + date(f.release_date) : ''}${f.catalog ? '<br>' + muted(esc(f.catalog) + (f.upc ? ' · UPC ' + esc(f.upc) : '')) : f.upc ? '<br>' + muted('UPC ' + esc(f.upc)) : ''}`))),
+      block('Smart links', smart.length ? tight(smart.map(x => a(x.url, x.label || 'Smart link'))) : ''),
+      block('Assets', assets.length ? tight(assets.map(([n, u]) => a(u, n))) : ''),
     ].join('');
 
-    const contacts = [has(p.pm) && `<b>${esc(p.pm)}</b>${dot}Project manager`,
-      ...d.team.filter(t => has(t.name)).map(t => `<b>${esc(t.name)}</b>${t.role ? dot + esc(t.role) : ''}${t.company ? ', ' + esc(t.company) : ''}${t.email ? dot + `<a href="mailto:${esc(t.email)}">${esc(t.email)}</a>` : ''}${t.phone ? dot + esc(t.phone) : ''}`)];
+    const contacts = [has(p.pm) && `${esc(p.pm)}${dot}Project manager`,
+      ...d.team.filter(t => has(t.name)).map(t => `${esc(t.name)}${t.role ? dot + esc(t.role) : ''}${t.company ? ', ' + esc(t.company) : ''}${t.email ? dot + `<a href="mailto:${esc(t.email)}">${esc(t.email)}</a>` : ''}${t.phone ? dot + esc(t.phone) : ''}`)];
 
     const page1 = `${header}<hr style="border:none;border-top:1px solid ${C.rule};margin:8pt 0 0 0">
       ${cols(['58%', left], ['42%', right])}
-      ${block('Timeline', lines(timeline.map(t => `<b>${date(t.date)}</b>&nbsp;&nbsp;${esc(t.item)}`)) + (otherNotes.length ? para(muted(linkify(otherNotes.join('\n')))) : ''))}
-      ${block('Smart links', smart.length ? para(smart.map(x => a(x.url, x.label || 'Smart link')).join(dot)) : '')}
-      ${block('Assets', assets.length ? para(assets.map(([n, u]) => a(u, n)).join(dot)) : '')}
-      ${block('Socials &amp; streaming', statsTable)}
-      ${block('Contacts', lines(contacts))}
-      ${block('Tour dates', tourLines(d.tour.filter(t => !t.date || t.date >= FP.today())))}`;
+      ${block('Timeline', tight(timeline.map(t => `${date(t.date)}${gap}${esc(t.item)}`)) + (otherNotes.length ? para(muted(linkify(otherNotes.join('\n'))), 'margin-top:3pt') : ''))}
+      ${stats}
+      ${block('Contacts', tight(contacts))}
+      ${block('Tour dates', tight(d.tour.filter(t => (has(t.date) || has(t.city)) && (!t.date || t.date >= today)).map(tourLine)))}`;
 
-    // ── PAGE 2+: PROJECT DETAILS ──
+    // ── PAGE 2+: PROJECT DETAILS ── (same small section labels as page 1)
     const tcols = [['num', '#'], ['song', 'Song'], ['length', 'Length'], ['isrc', 'ISRC'], ['writers', 'Writers'], ['publishers', 'Publishers']].filter(([c]) => c === 'num' || tracks.some(t => has(t[c])));
-    const cell = (html, head) => `<td style="padding:3pt 8pt 3pt 0;border:1px solid #ffffff;border-bottom:1px solid ${C.rule};vertical-align:top;font-size:9pt;${head ? `color:${C.muted};font-weight:bold;` : ''}">${html}</td>`;
-    const credits = tracks.length ? `<table style="border-collapse:collapse;width:100%;${W}"><tr>${tcols.map(([, l]) => cell(esc(l), true)).join('')}</tr>
-        ${tracks.map((t, i) => `<tr>${tcols.map(([c]) => cell(c === 'song' ? `<b>${esc(t.song)}</b>` : esc(c === 'num' ? (t.vol || '') + (t.num || i + 1) : t[c] || ''))).join('')}</tr>`).join('')}</table>` : '';
+    const credits = tracks.length ? `<table style="border-collapse:collapse;width:100%;${W}"><tr>${tcols.map(([, l]) => cell(esc(l), { head: true, size: 9 })).join('')}</tr>
+        ${tracks.map((t, i) => `<tr>${tcols.map(([c]) => cell(esc(c === 'num' ? (t.vol || '') + (t.num || i + 1) : t[c] || ''), { size: 9 })).join('')}</tr>`).join('')}</table>` : '';
+    const sub = t => `<p style="margin:5pt 0 1pt 0;font-size:7.5pt;color:${C.muted}">${t}</p>`;
 
     const page2 = [
-      section('Retail &amp; digital marketing', lines([has(d.retail) && `<b>Retail.</b> ${linkify(d.retail)}`, has(d.digital) && `<b>Digital.</b> ${linkify(d.digital)}`])),
-      section('Digital playlisting', lines(d.playlists.filter(x => has(x.name)).map(x => `${x.dsp ? esc(x.dsp) + dot : ''}<b>${a(x.url, x.name)}</b>${x.status ? ' ' + muted('(' + esc(x.status) + ')') : ''}${x.notes ? dot + esc(x.notes) : ''}`))),
-      section('Press', (() => {
+      block('Retail &amp; digital marketing', lines([has(d.retail) && `${muted('Retail')}${gap}${linkify(d.retail)}`, has(d.digital) && `${muted('Digital')}${gap}${linkify(d.digital)}`])),
+      block('Digital playlisting', tight(d.playlists.filter(x => has(x.name)).map(x => `${x.dsp ? esc(x.dsp) + dot : ''}${a(x.url, x.name)}${x.status ? ' ' + muted('(' + esc(x.status) + ')') : ''}${x.notes ? dot + esc(x.notes) : ''}`))),
+      block('Press', (() => {
         // Sections in the order the team added them (Single 1, Single 2, Album, Tour…).
-        const line = x => `<b>${a(x.url, x.outlet || shortUrl(x.url))}</b>${x.notes ? dot + esc(x.notes) : ''}`;
         return d.press_sections.map(sc => {
           const items = sc.items.filter(x => has(x.outlet) || FP.safeUrl(x.url));
-          if (!items.length) return '';
-          return para(`<span style="font-size:8pt;font-weight:bold;color:${C.muted}">${esc(sc.type + (sc.name ? ' — ' + sc.name : '')).toUpperCase()}</span>`, 'margin-top:6pt') + lines(items.map(line));
-        }).join('') + (has(d.press_previous) ? para(`<b>Previous press.</b> ${linkify(d.press_previous)}`, 'margin-top:6pt') : '');
+          return items.length ? sub(esc(sc.type + (sc.name ? ' — ' + sc.name : '')).toUpperCase()) + tight(items.map(x => `${a(x.url, x.outlet || shortUrl(x.url))}${x.notes ? dot + esc(x.notes) : ''}`)) : '';
+        }).join('') + (has(d.press_previous) ? sub('PREVIOUS PRESS') + para(linkify(d.press_previous)) : '');
       })()),
-      section('Radio', has(d.radio) ? para(linkify(d.radio)) : ''),
-      section('Syncs', has(d.syncs) ? para(linkify(d.syncs)) : ''),
-      section('Recording details', has(d.recording) ? para(linkify(d.recording)) : ''),
-      section('Credits', credits),
-      section('Past tour dates', lines(d.tour.filter(t => t.date && t.date < FP.today()).sort((x, y) => y.date.localeCompare(x.date)).map(t =>
-        `<b>${esc(FP.fmtDate(t.date, { month: 'short', day: 'numeric', year: 'numeric' }))}</b>&nbsp;&nbsp;${esc(t.city || '')}${t.venue ? ' — ' + esc(t.venue) : ''}${t.notes ? dot + esc(t.notes) : ''}${t.cancelled ? ' ' + muted('(cancelled)') : ''}`))),
+      block('Radio', has(d.radio) ? para(linkify(d.radio)) : ''),
+      block('Syncs', has(d.syncs) ? para(linkify(d.syncs)) : ''),
+      block('Recording details', has(d.recording) ? para(linkify(d.recording)) : ''),
+      block('Credits', credits),
+      block('Past tour dates', tight(d.tour.filter(t => t.date && t.date < today).sort((x, y) => y.date.localeCompare(x.date)).map(tourLine))),
     ].join('');
 
     const updated = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
     return `<html><body style="font-family:Arial;font-size:9.5pt;color:${C.ink};line-height:1.35">
       ${page1}
-      ${page2 ? `<p style="page-break-before:always;margin:0 0 2pt 0;font-size:8pt;color:${C.muted}">${esc(p.artist).toUpperCase()} · ${esc(p.title).toUpperCase()}</p>
-        <h1 style="font-size:16pt;font-weight:bold;margin:0 0 4pt 0">Project details</h1>${page2}` : ''}
+      ${page2 ? `<p style="page-break-before:always;margin:0"></p>${page2}` : ''}
       <p style="margin:24pt 0 0 0;font-size:7.5pt;color:${C.muted}">Updated ${updated} from the Fat Possum project system. Edit the project in the app and click “Update Google Doc” to change this document; direct edits are replaced on the next update.</p>
     </body></html>`;
   }
+
 
   // Readable link text: Dropbox files show their file name, everything else
   // shows the address without https://, www. or tracking parameters.
