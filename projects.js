@@ -70,7 +70,7 @@
         <span id="pe-status"></span>
         ${!isNew ? `<span id="pe-doc"></span>` : ''}
       </div>
-      ${!isNew ? `<div class="tabs"><button data-t="info">Project Info</button><button data-t="budget">Budget</button><button data-t="pnl">P&amp;L</button><button data-t="dates">Internal Dates</button><button data-t="social">Social</button></div>` : ''}
+      ${!isNew ? `<div class="tabs"><button data-t="info">Project Info</button><button data-t="budget">Budget</button><button data-t="pnl">P&amp;L</button><button data-t="ads">Ads</button><button data-t="dates">Internal Dates</button><button data-t="social">Social</button></div>` : ''}
       <div class="page-body" id="pe-body"></div>
       <div class="savebar" id="pe-save">
         ${ro ? '<span class="hint">Read-only access</span>' : `<button class="btn-primary" id="pe-savebtn">${isNew ? 'Create project' : 'Save'}</button><span class="dirty" id="pe-dirty"></span>`}
@@ -105,15 +105,16 @@
     const drawTab = () => {
       main.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === tab));
       // Project Info and Budget both edit the project itself, so they share the Save bar.
-      $('#pe-save').classList.toggle('hidden', !['info', 'budget', 'pnl'].includes(tab));
+      $('#pe-save').classList.toggle('hidden', !['info', 'budget', 'pnl', 'ads'].includes(tab));
       if (tab === 'info') FP.projectInfo.render($('#pe-body'), proj, ro, () => { drawTitle(); setDirty(); }, { pullTour });
       if (tab === 'budget') FP.budget.render($('#pe-body'), proj, ro, setDirty, { pushSheet });
       if (tab === 'pnl') FP.pnl.render($('#pe-body'), proj, ro, setDirty);
+      if (tab === 'ads') FP.ads.render($('#pe-body'), proj, ro, setDirty);
       if (tab === 'dates') renderDates($('#pe-body'), proj);
       if (tab === 'social') renderProjectSocial($('#pe-body'), proj);
     };
     main.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
-      if (['info', 'budget', 'pnl'].includes(tab) && !['info', 'budget', 'pnl'].includes(b.dataset.t) && page.dirty && !confirm('You have unsaved changes on Project Info. Switch tabs anyway? (They’ll stay until you leave the project.)')) return;
+      if (['info', 'budget', 'pnl', 'ads'].includes(tab) && !['info', 'budget', 'pnl', 'ads'].includes(b.dataset.t) && page.dirty && !confirm('You have unsaved changes on Project Info. Switch tabs anyway? (They’ll stay until you leave the project.)')) return;
       tab = b.dataset.t; FP.setQuery({ tab: tab === 'info' ? '' : tab }); drawTab();
     });
 
