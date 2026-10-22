@@ -676,6 +676,9 @@ async function googleToken(env) {
 }
 
 function calId(env, kind) { return kind === 'release' ? env.CAL_RELEASES_ID : env.CAL_INTERNAL_ID; }
+// A shared calendar (e.g. the company's main one) also holds birthdays, OOO and so on.
+// On those, the app only ever reads back events it created; everything else is ignored.
+function calShared(env, kind) { return String(kind === 'release' ? env.CAL_RELEASES_SHARED : env.CAL_INTERNAL_SHARED).toLowerCase() === 'true'; }
 function calEnabled(env, kind) { return !!(env.GOOGLE_SA_EMAIL && env.GOOGLE_SA_KEY && calId(env, kind)); }
 
 async function gcal(env, kind, method, path = '', { query, payload } = {}) {
@@ -798,11 +801,14 @@ async function pullCalendar(env, kind) {
   const stateKey = 'synctoken:' + kind + ':' + calId(env, kind);
   const st = await env.DB.prepare('SELECT value FROM sync_state WHERE key = ?').bind(stateKey).first();
   let syncToken = st?.value || null, pageToken = null, nextSyncToken = null, changed = 0, pages = 0;
+  const shared = calShared(env, kind);
+  // Events the app knows about, loaded once, so unrelated events cost no database lookups.
+  const known = new Set((await env.DB.prepare(`SELECT gcal_event_id FROM ${table} WHERE gcal_event_id IS NOT NULL`).all()).results.map(r => r.gcal_event_id));
 
   do {
     if (++pages > 200) throw new Error('calendar list did not finish after 200 pages');
     const r = await gcal(env, kind, 'GET', '', {
-      query: { syncToken, pageToken, showDeleted: 'true', singleEvents: 'true', maxResults: '250' },
+      query: { syncToken, pageToken, showDeleted: 'true', singleEvents: 'true', maxResults: '2500' },
     });
     if (r.status === 410) {           // token expired — full resync
       await env.DB.prepare('DELETE FROM sync_state WHERE key = ?').bind(stateKey).run();
@@ -813,6 +819,7 @@ async function pullCalendar(env, kind) {
 
     for (const ev of r.data.items || []) {
       const fpId = ev.extendedProperties?.private?.fpId;
+      if (!fpId && !known.has(ev.id) && (shared || ev.status === 'cancelled')) continue;   // not ours
       const row = await env.DB.prepare(`SELECT * FROM ${table} WHERE ${fpId ? 'id = ?' : 'gcal_event_id = ?'}`).bind(fpId || ev.id).first();
 
       if (ev.status === 'cancelled') {

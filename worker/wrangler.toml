@@ -17,8 +17,10 @@ ADMIN_EMAIL      = "patrick@fatpossum.com"
 ALLOWED_ORIGINS  = "https://fatpossumrecords.github.io,http://localhost:8080"
 APP_URL          = "https://fatpossumrecords.github.io/fp-projects/"
 # Calendar IDs from Google Calendar → Settings → Integrate calendar → Calendar ID
-CAL_RELEASES_ID  = ""
-CAL_INTERNAL_ID  = ""
+CAL_RELEASES_ID  = "fatpossum.com_nd70ikinqpc3d0ujh1juu06480@group.calendar.google.com"   # Fat Possum PRIMARY
+CAL_RELEASES_SHARED = "true"   # shared company calendar: the app only touches events it created
+CAL_INTERNAL_ID  = ""          # internal dates calendar: not set up yet
+CAL_INTERNAL_SHARED = ""
 
 # Secrets (npx wrangler secret put NAME):
 #   SESSION_SECRET   any long random string

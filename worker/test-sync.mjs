@@ -187,6 +187,23 @@ await A('PUT', '/api/projects/' + tp5.id, { data: p5.data, _expected_updated_at:
 const t5b = (await A('POST', `/api/projects/${tp5.id}/tour/pull`)).project.data.tour;
 ok(t5b.length === 2 && !t5b.some(t => t.ext_id === 'cm:9'), 'a deleted pulled show is not added back');
 
+// 13. shared calendar: other people's events are never imported or touched
+env.CAL_RELEASES_SHARED = 'true';
+const before13 = (await A('GET', '/api/releases')).length;
+for (const [i, summary] of ['Peter Green Birthday', 'India ooo', 'Thanksgiving - US'].entries()) {
+  const id = 'foreign' + i; cals.REL.set(id, { id, status: 'confirmed', summary, start: { date: '2026-11-0' + (i + 1) } }); touch('REL', cals.REL.get(id));
+}
+const mine = await A('POST', '/api/releases', { artist: 'Shared Test', title: 'On Primary', release_date: '2027-01-08' });
+const mineEv = cals.REL.get((await A('GET', '/api/releases/' + mine.id)).gcal_event_id);
+mineEv.start = { date: '2027-01-15' }; touch('REL', mineEv);
+cals.REL.get('foreign1').status = 'cancelled'; touch('REL', cals.REL.get('foreign1'));
+await A('POST', '/api/sync');
+const rels13 = await A('GET', '/api/releases');
+ok(rels13.length === before13 + 1 && !rels13.some(r => /Birthday|ooo|Thanksgiving/.test(r.artist + r.title)), 'shared calendar: birthdays / OOO / holidays are not imported');
+ok((await A('GET', '/api/releases/' + mine.id)).release_date === '2027-01-15', 'shared calendar: moving an app event in Google still syncs back');
+ok(!cals.REL.get('foreign0').extendedProperties && cals.REL.get('foreign0').summary === 'Peter Green Birthday', 'shared calendar: other events are left untouched');
+env.CAL_RELEASES_SHARED = '';
+
 // 12. scheduled Chartmetric refresh (runs as the cron would)
 const tp4 = await A('POST', '/api/projects', { artist: 'Nina Sky', title: 'Weekly', release_date: '2027-02-01', data: { chartmetric_id: '2000', followers: { instagram: { count: 50000, asof: '2026-09-01' } } } });
 await worker.scheduled({}, env, ctx); while (waits.length) await waits.shift();
