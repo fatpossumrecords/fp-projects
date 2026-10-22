@@ -1279,7 +1279,7 @@ async function cmEvents(cmId, env) {
 
 const cityKey = c => String(c || '').split(',')[0].trim().toLowerCase();
 
-const venueKey = v => String(v || '').toLowerCase().replace(/^the\s+/, '').replace(/[^a-z0-9]+/g, '');
+const venueKey = v => String(v || '').toLowerCase().replace(/&/g, ' and ').replace(/^the\s+/, '').replace(/[^a-z0-9]+/g, '');
 
 // Match a listing to an existing row, most certain first:
 //   same listing → same date + city → same date + venue → the only unlinked show that day.

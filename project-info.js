@@ -194,6 +194,12 @@
     s = s.replace(/^(mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)[a-z]*\.?,?\s+/i, '');
     let m, y, mo, d;
     if ((m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/))) [y, mo, d] = [+m[1], +m[2] - 1, +m[3]];
+    // Festival ranges use their first day: "13-16 Jan 2027", "Jan 13-16", "Jan 31 – Feb 2"
+    else if ((m = s.match(/^(\d{1,2})\s*[-–]\s*\d{1,2}\s+([a-z]{3,9})\.?(?:,?\s+(\d{4}))?/i)) && monthIdx(m[2]) !== undefined) {
+      d = +m[1]; mo = monthIdx(m[2]); y = m[3] ? +m[3] : null;
+    } else if ((m = s.match(/^([a-z]{3,9})\.?\s+(\d{1,2})\s*[-–]\s*(?:[a-z]{3,9}\.?\s+)?\d{1,2}(?:,?\s+(\d{4}))?/i)) && monthIdx(m[1]) !== undefined) {
+      mo = monthIdx(m[1]); d = +m[2]; y = m[3] ? +m[3] : null;
+    }
     else if ((m = s.match(/^(\d{1,2})[/.](\d{1,2})(?:[/.](\d{2,4}))?/))) [mo, d, y] = [+m[1] - 1, +m[2], m[3] ? +(m[3].length === 2 ? '20' + m[3] : m[3]) : null];
     else if ((m = s.match(/^([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(\d{4}))?/i)) && monthIdx(m[1]) !== undefined) {
       mo = monthIdx(m[1]); d = +m[2]; y = m[3] ? +m[3] : null;
@@ -223,31 +229,54 @@
   }
 
   // One show per line: date, then city and venue separated by tabs, " - ", " | ", " @ " or commas.
+  // Button and badge text that comes along when copying from Songkick, Bandsintown etc.
+  const TOUR_NOISE = /^(buy |get )?tickets?$|^rsvp$|^sold ?out$|^more info$|^notify me$|^track( artist)?$|^follow$|^share$|^on ?sale.*$|^set ?times?$|^view( all)?.*$|^upcoming (concerts|shows|events).*$|^past (concerts|shows).*$|^\d+ (people )?(going|interested|attending)$|^(free|all ages|18\+|21\+)$|^(us|uk|eu)$/i;
+
+  const COUNTRY = /^(us|usa|united states|uk|united kingdom|england|scotland|wales|ireland|canada|mexico|australia|new zealand|japan|france|germany|spain|portugal|italy|netherlands|belgium|denmark|sweden|norway|finland|iceland|switzerland|austria|poland|czech republic|czechia|[A-Z]{2})$/i;
+
+  // Splits "Toronto, ON, Canada - Massey Hall" style text into city / venue / notes.
+  function tourParts(parts) {
+    parts = parts.map(p => p.trim()).filter(Boolean);
+    let city = '', venue = '', notes = '';
+    if (parts.length >= 2) {
+      // Whichever part has a comma ("City, ST") is the city.
+      const ci = parts.findIndex(p => /,/.test(p));
+      if (ci > 0) parts.unshift(parts.splice(ci, 1)[0]);
+      [city, venue, ...notes] = parts;
+      notes = notes.join(' · ');
+    } else if (parts.length === 1) {
+      const c = parts[0].split(/\s*,\s*/);
+      // "Chicago, IL, Lincoln Hall" → city + venue; "Toronto, ON, Canada" is all city.
+      if (c.length >= 3 && !COUNTRY.test(c[c.length - 1])) { city = c.slice(0, 2).join(', '); venue = c.slice(2).join(', '); }
+      else city = parts[0];
+    }
+    return { city, venue, notes };
+  }
+
+  // One show per line ("Mar 14 - Nashville, TN - The Basement East"), or blocks copied
+  // from a tour page where the date, venue and city are on separate lines.
   function parseTour(text) {
     const out = [];
+    let block = null;
+    const close = () => { if (block) { out.push({ date: block.date, ...tourParts(block.lines.slice(0, 3)) }); block = null; } };
     for (const raw of String(text).split(/\r?\n/)) {
       const line = raw.trim();
-      if (!line) continue;
+      if (!line || TOUR_NOISE.test(line)) continue;
       const ld = leadingDate(line);
-      if (!ld) { out.push({ error: line }); continue; }
-      let rest = ld.rest.replace(/^\s*[-–—|,:@\t]\s*/, '').trim();
-      let parts = rest.includes('\t') ? rest.split('\t') : rest.split(/\s+[-–—|@]\s+|\s+at\s+/i);
-      parts = parts.map(p => p.trim()).filter(Boolean);
-      let city = '', venue = '', notes = '';
-      if (parts.length >= 2) {
-        [city, venue, ...notes] = parts;
-        // "The Basement East - Nashville, TN" → put the "City, ST" part in City.
-        if (!/,/.test(city) && /,\s*[A-Z]{2,3}\b|,\s*[A-Z][a-z]+$/.test(venue)) [city, venue] = [venue, city];
-        notes = notes.join(' · ');
-      } else if (parts.length === 1) {
-        const c = parts[0].split(/\s*,\s*/);
-        if (c.length >= 3) { city = c.slice(0, 2).join(', '); venue = c.slice(2).join(', '); }
-        else city = parts[0];
+      if (ld) {
+        close();
+        const rest = ld.rest.replace(/^\s*[-–—|,:@\t]\s*/, '').trim();
+        if (!rest || /^\d{4}$/.test(rest)) { block = { date: ld.date, lines: [] }; continue; }   // details on the next lines
+        out.push({ date: ld.date, ...tourParts(rest.includes('\t') ? rest.split('\t') : rest.split(/\s+[-–—|@]\s+|\s+at\s+/i)) });
+        continue;
       }
-      out.push({ date: ld.date, city, venue, notes });
+      if (block) { block.lines.push(line); continue; }
+      out.push({ error: line });
     }
+    close();
     return out;
   }
+
 
   // ── DROPBOX CHOOSER ────────────────────────────────────────
   // Needs a Dropbox app key (Settings → Lists) with this site's domain added
@@ -863,7 +892,7 @@
     function pasteTour() {
       const m = FP.modal({
         title: 'Paste tour dates', wide: true, saveLabel: 'Add these dates',
-        body: `<p class="hint" style="margin-bottom:8px">One show per line, starting with the date. For example:<br><span class="mono">Mar 14 - Nashville, TN - The Basement East</span><br><span class="mono">3/15/27 Atlanta, GA @ Terminal West</span><br><span class="mono">Fri, April 2 | London, UK | Lafayette</span></p>
+        body: `<p class="hint" style="margin-bottom:8px">Copy the list straight from Songkick, Bandsintown or the artist's site (date, venue and city on separate lines is fine; buttons like “Tickets” are skipped), or type one show per line starting with the date. Shows already in the list are matched by date and city or venue, so nothing doubles up. For example:<br><span class="mono">Mar 14 - Nashville, TN - The Basement East</span><br><span class="mono">3/15/27 Atlanta, GA @ Terminal West</span><br><span class="mono">Fri, April 2 | London, UK | Lafayette</span></p>
           <textarea id="pt-text" rows="10" style="font-family:var(--mono);font-size:12px"></textarea>
           <label style="display:block;margin-top:8px"><input type="checkbox" id="pt-ann"> These dates are already announced publicly</label>
           <div id="pt-prev" style="margin-top:10px"></div>`,
@@ -871,9 +900,15 @@
           const ann = el.querySelector('#pt-ann').checked;
           const rows = parseTour(el.querySelector('#pt-text').value).filter(r => !r.error).map(r => ({ ...r, key: crypto.randomUUID().slice(0, 8), source: 'manual', announced: ann }));
           if (!rows.length) throw new Error('No dates found. Each line needs to start with a date.');
-          const seen = new Set(d.tour.map(t => t.date + '|' + String(t.city || '').toLowerCase()));
+          // Same show if it's the same date and the same city (name before the comma) or venue.
+          const cityK = c => String(c || '').split(',')[0].trim().toLowerCase();
+          const venueK = v => String(v || '').toLowerCase().replace(/&/g, ' and ').replace(/^the\s+/, '').replace(/[^a-z0-9]+/g, '');
           let added = 0;
-          for (const r of rows) { if (seen.has(r.date + '|' + r.city.toLowerCase())) continue; d.tour.push(r); added++; }
+          for (const r of rows) {
+            const dup = d.tour.find(t => t.date === r.date && ((r.city && cityK(t.city) === cityK(r.city)) || (r.venue && t.venue && venueK(t.venue) === venueK(r.venue))));
+            if (dup) { if (ann && !dup.announced) dup.announced = true; continue; }
+            d.tour.push(r); added++;
+          }
           d.tour.sort((a, b) => String(a.date || '9').localeCompare(String(b.date || '9')));
           refresh('tour'); onChange();
           FP.toast(`Added ${added} show${added === 1 ? '' : 's'}${rows.length - added ? ` (${rows.length - added} already listed)` : ''}`);
