@@ -395,7 +395,7 @@
       </div>`,
       onesheet: () => `<div class="grid">
         ${FP.field('About this release', ta('data.about', 5, 'The short pitch: what this record is and why it matters. This leads the first page of the Google Doc.'), 'wide')}
-        ${FP.field('Selling points', ta('data.selling_points', 4, 'One per line, e.g.\nFirst album in five years\nProduced by …\nNorth American tour in March'), 'wide')}
+        ${FP.field('Highlights', ta('data.selling_points', 4, 'One per line, e.g.\nFirst album in five years\nProduced by …\nNorth American tour in March'), 'wide')}
         ${FP.field('Focus tracks', inp('data.focus_tracks', 'text', ' placeholder="e.g. Bird Songs For Atomic Skies, Eleven Saints"'), 'wide')}
       </div><p class="hint" style="margin-top:6px">These make up the one-sheet on page 1 of the Google Doc, with RIYL, press quotes, formats, tracklist and tour dates.</p>`,
       social: () => `${linkTable('social', SOCIALS)}<div style="margin-top:10px">${rep('social_extra')}</div>
@@ -1093,12 +1093,12 @@
 
     const left = [
       block('About', has(d.about) ? String(d.about).split(/\n\s*\n/).map(x => para(linkify(x), 'margin-bottom:6pt')).join('') : ''),
-      block('Selling points', points.length ? `<ul style="margin:0 0 0 14pt;padding:0">${points.map(x => `<li style="margin:0 0 1pt 0">${linkify(x)}</li>`).join('')}</ul>` : ''),
+      block('Highlights', points.length ? `<ul style="margin:0 0 0 14pt;padding:0">${points.map(x => `<li style="margin:0 0 1pt 0">${linkify(x)}</li>`).join('')}</ul>` : ''),
       block('Focus tracks', has(d.focus_tracks) ? para(esc(d.focus_tracks)) : ''),
       block('Tracklist', tracks.length ? `<ol style="margin:0 0 0 16pt;padding:0">${tracks.map(t => `<li style="margin:0">${esc(t.song)}${t.length ? ' ' + muted(esc(t.length)) : ''}</li>`).join('')}</ol>` : ''),
       block('For fans of', has(d.riyl) ? para(txt(d.riyl)) : ''),
       block('Press', has(d.press_quotes) ? para(`<i>${linkify(d.press_quotes)}</i>`) : ''),
-    ].join('') || para(muted('Add “About this release” and selling points in the project’s One-sheet section.'));
+    ].join('') || para(muted('Add “About this release” and highlights in the project’s One-sheet section.'));
 
     // Date, label and cat # are already in the header.
     const facts = [['Territory', esc(p.territory)], ['Genre', esc(d.genre)], ['Hometown', esc(d.hometown)], ['Website', FP.safeUrl(d.website) ? a(d.website) : '']].filter(([, v]) => v);
