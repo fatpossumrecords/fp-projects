@@ -46,6 +46,9 @@
     return `${g.diff > 0 ? '+' : g.diff < 0 ? '−' : '±'}${short}${g.pct != null ? ` (${g.diff >= 0 ? '+' : '−'}${Math.abs(g.pct).toFixed(1)}%)` : ''}${withSpan ? ' ' + g.span : ''}`;
   }
 
+  // Tour dates always read in date order; rows still waiting for a date go last.
+  const sortTour = rows => rows.sort((a, b) => String(a.date || '9999').localeCompare(String(b.date || '9999')));
+
   function blankData() {
     return { press_sections: [], social: {}, dsp_links: {}, followers: {}, assets: {}, social_extra: [], dsp_extra: [], smart_links: [], team: [], formats: [], timeline: [], tracks: [], playlists: [], tour: [] };
   }
@@ -95,6 +98,7 @@
     delete d.tracklisting;
     for (const k of Object.keys(REPS)) if (!Array.isArray(d[k])) d[k] = [];
     for (const k of Object.keys(REPS)) if (REPS[k].keyed) for (const row of d[k]) if (!row.key) row.key = crypto.randomUUID().slice(0, 8);
+    sortTour(d.tour);
     return d;
   }
 
@@ -540,6 +544,14 @@
 
     box.addEventListener('change', e => {
       const t = e.target;
+      // A tour date was entered or changed: move the show into place and keep editing it.
+      if (t.dataset.rep === 'tour' && t.dataset.k === 'date') {
+        const key = d.tour[+t.dataset.i]?.key;
+        sortTour(d.tour); refresh('tour'); onChange();
+        const i = d.tour.findIndex(r => r.key === key);
+        if (i >= 0) box.querySelector(`[data-rep="tour"][data-i="${i}"][data-k="city"]`)?.focus();
+        return;
+      }
       if (t.dataset.tourAnn !== undefined) { d.tour[+t.dataset.tourAnn].announced = t.checked; refresh('tour'); onChange(); return; }
       if (t.dataset.ps !== undefined && t.dataset.psf === 'type') { d.press_sections[+t.dataset.ps].type = t.value; refresh('press'); onChange(); return; }
       if (t.dataset.p === 'artist') fillProfile(true);
