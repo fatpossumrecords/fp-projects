@@ -14,24 +14,25 @@
 
   async function renderList(main, params) {
     const projects = await FP.get('/api/projects');
-    let q = params.q || '', show = params.show || 'upcoming';
+    // Current = not released yet, or released within the last 12 months (campaigns run on after release).
+    let q = params.q || '', show = ({ upcoming: 'current', past: 'archive' })[params.show] || params.show || 'current';
     main.innerHTML = `
       <div class="page-head"><h2>Projects</h2>
         ${FP.canWrite() ? '<a class="btn-primary" href="#/projects/new" style="text-decoration:none">+ New project</a>' : ''}</div>
       <div class="page-body">
         <div class="toolbar" style="margin-bottom:14px">
           <input type="search" id="p-q" placeholder="Search projects…" style="width:240px" value="${esc(q)}">
-          <div class="seg" id="p-show"><button data-v="upcoming">Upcoming</button><button data-v="past">Released</button><button data-v="all">All</button></div>
+          <div class="seg" id="p-show"><button data-v="current">Current</button><button data-v="archive">Past campaigns</button><button data-v="all">All</button></div>
         </div>
         <div id="p-list"></div>
       </div>`;
     const draw = () => {
-      const today = FP.today(), ql = q.toLowerCase();
+      const cutoff = FP.addDays(FP.today(), -365), ql = q.toLowerCase();
       main.querySelectorAll('#p-show button').forEach(b => b.classList.toggle('on', b.dataset.v === show));
       const list = projects.filter(p =>
-        (show === 'all' || (show === 'upcoming' ? (!p.release_date || p.release_date >= today) : (p.release_date && p.release_date < today))) &&
+        (show === 'all' || (show === 'current' ? (!p.release_date || p.release_date >= cutoff) : (p.release_date && p.release_date < cutoff))) &&
         (!ql || [p.artist, p.title, p.name, p.catalog, p.pm].some(v => String(v || '').toLowerCase().includes(ql))))
-        .sort((a, b) => show === 'past' ? String(b.release_date).localeCompare(String(a.release_date)) : String(a.release_date || '9').localeCompare(String(b.release_date || '9')));
+        .sort((a, b) => show === 'archive' ? String(b.release_date).localeCompare(String(a.release_date)) : String(a.release_date || '9').localeCompare(String(b.release_date || '9')));
       main.querySelector('#p-list').innerHTML = list.length ? `<div class="cards">${list.map(p => `
         <a class="card" href="#/projects/${p.id}" style="border-top:3px solid ${FP.artistColor(p.artist)}">
           <div class="c-artist">${esc(p.artist)}</div>
