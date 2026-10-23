@@ -75,7 +75,7 @@
     const tile = a => {
       const label = { 30: '30 days', 90: '90 days', 182: '6 months' }[ui.range];
       const proj = a.projects[0];
-      return `<div class="card" style="cursor:default;gap:4px;border-top:3px solid ${FP.artistColor(a.artist)}">
+      return `<div class="card" style="cursor:default;gap:4px;border-top:3px solid ${FP.statusColor(proj.status)}">
         <div style="display:flex;align-items:baseline;gap:6px"><div class="c-artist" style="flex:1">${esc(a.artist)}</div>
           <a class="hint" href="#/projects/${proj.id}" title="${esc(a.projects.map(p => p.title).join(', '))}">${esc(proj.title)}${a.projects.length > 1 ? ` +${a.projects.length - 1}` : ''} ↗</a></div>
         ${a.error && !a.latest ? `<div class="hint" style="padding:16px 0">${esc(a.error)}. Use <b>Look up online</b> on the project to link it.</div>` : `

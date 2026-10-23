@@ -1436,7 +1436,7 @@ function decodeEntities(s) {
 async function dashboardListeners(env, refresh) {
   if (!env.CHARTMETRIC_REFRESH_TOKEN) return { configured: false, artists: [] };
   const today = new Date().toISOString().slice(0, 10);
-  const rows = (await env.DB.prepare('SELECT id, artist, title, release_date, data FROM projects WHERE release_date IS NULL OR release_date >= ? ORDER BY release_date IS NULL, release_date')
+  const rows = (await env.DB.prepare('SELECT id, artist, title, release_date, status, data FROM projects WHERE release_date IS NULL OR release_date >= ? ORDER BY release_date IS NULL, release_date')
     .bind(addDays(today, -365)).all()).results;
   const byArtist = new Map();
   for (const r of rows) {
@@ -1444,7 +1444,7 @@ async function dashboardListeners(env, refresh) {
     if (!byArtist.has(k)) byArtist.set(k, { artist: r.artist, projects: [], project: null });
     const a = byArtist.get(k);
     let data = {}; try { data = JSON.parse(r.data || '{}'); } catch { /* bad row */ }
-    a.projects.push({ id: r.id, title: r.title, release_date: r.release_date });
+    a.projects.push({ id: r.id, title: r.title, release_date: r.release_date, status: r.status });
     if (!a.project) a.project = { ...r, data };
   }
   const since = addDays(today, -182);
