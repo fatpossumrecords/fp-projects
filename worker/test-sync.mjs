@@ -47,6 +47,9 @@ globalThis.fetch = async (url, opts = {}) => {
     if (u.pathname.startsWith('/api/artist/2000/stat/')) {
       const field = u.searchParams.get('field');
       if (u.pathname.endsWith('/instagram')) return J({ obj: { [field]: [{ value: 52400, timestp: '2026-10-20T08:00:00.000Z', weekly_diff: 300, monthly_diff: 1200, monthly_diff_percent: 2.34 }] } });
+      if (u.pathname.endsWith('/spotify') && field === 'listeners' && !u.searchParams.get('latest')) return J({ obj: { listeners: [
+        { value: 100000, timestp: '2026-08-01T08:00:00.000Z' }, { value: 104000, timestp: '2026-09-01T08:00:00.000Z' },
+        { value: 106000000 > 0 ? 106000 : 0, timestp: '2026-10-20T08:00:00.000Z', weekly_diff: -500, monthly_diff: 2000, monthly_diff_percent: 1.9 }] } });
       if (u.pathname.endsWith('/spotify') && field === 'listeners') return J({ obj: { listeners: [{ value: 106000000, timestp: '2026-10-20T08:00:00.000Z', weekly_diff: -50000, monthly_diff: -239091, monthly_diff_percent: -0.67 }] } });
       return new Response('{}', { status: 500 });
     }
@@ -236,6 +239,15 @@ ok(rels13.length === before13 + 1 && !rels13.some(r => /Birthday|ooo|Thanksgivin
 ok((await A('GET', '/api/releases/' + mine.id)).release_date === '2027-01-15', 'shared calendar: moving an app event in Google still syncs back');
 ok(!cals.REL.get('foreign0').extendedProperties && cals.REL.get('foreign0').summary === 'Peter Green Birthday', 'shared calendar: other events are left untouched');
 env.CAL_RELEASES_SHARED = '';
+
+// 15. dashboard: monthly listeners per artist with a current project
+const dash = await A('GET', '/api/dashboard/listeners');
+const nina = dash.artists.find(x => x.artist === 'G');
+ok(dash.configured && nina && nina.points.length === 3 && nina.points[0][0] === '2026-08-01' && nina.latest.value === 106000 && nina.latest.month_pct === 1.9, 'dashboard returns a listener series and latest change per artist');
+const unlinked = dash.artists.find(x => x.artist === 'E' || x.artist === 'C');
+ok(!unlinked || unlinked.error, 'artists without a Chartmetric link are flagged, not failed');
+const dash2 = await A('GET', '/api/dashboard/listeners');
+ok(JSON.stringify(dash2.artists.find(x => x.artist === 'G').points) === JSON.stringify(nina.points), 'second call is served from the 12-hour cache');
 
 // 12. scheduled Chartmetric refresh (runs as the cron would)
 const tp4 = await A('POST', '/api/projects', { artist: 'Nina Sky', title: 'Weekly', release_date: '2027-02-01', data: { chartmetric_id: '2000', followers: { instagram: { count: 50000, asof: '2026-09-01' } } } });

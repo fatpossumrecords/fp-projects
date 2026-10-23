@@ -120,11 +120,11 @@ FP.navigate = async function () {
     history.replaceState(null, '', FP.current.hash);
     return;
   }
-  const hash = location.hash || '#/releases';
+  const hash = location.hash || '#/dashboard';
   const [path, qs] = hash.slice(2).split('?');
   const [name, ...rest] = path.split('/');
   const params = Object.fromEntries(new URLSearchParams(qs || ''));
-  const render = FP.routes[name] || FP.routes.releases;
+  const render = FP.routes[name] || FP.routes.dashboard;
   document.querySelectorAll('#sidebar nav a').forEach(a => a.classList.toggle('active', a.dataset.nav === name));
   FP.current?.destroy?.();
   FP.current = { hash, dirty: false };

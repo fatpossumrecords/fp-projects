@@ -162,6 +162,7 @@ async function route(request, url, env, ctx) {
     return json(summary);
   }
 
+  if (res === 'dashboard' && id === 'listeners' && m === 'GET') return json(await dashboardListeners(env, url.searchParams.get('refresh') === '1'));
   if (res === 'linkinfo' && m === 'GET') return json(await linkInfo(url.searchParams.get('url') || ''));
   if (res === 'followers' && m === 'POST') return json(await fetchFollowers(await body(request), env));
   if (res === 'chartmetric') {
@@ -1427,4 +1428,45 @@ function decodeEntities(s) {
     if (e[0] === '#') { const n = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10); return Number.isFinite(n) ? String.fromCodePoint(n) : m; }
     return m;
   });
+}
+
+// ── DASHBOARD: Spotify monthly listeners for current projects ─
+// Current = no release date yet, or released within the last 12 months. One series
+// per artist (six months of daily points from Chartmetric), cached 12 hours.
+async function dashboardListeners(env, refresh) {
+  if (!env.CHARTMETRIC_REFRESH_TOKEN) return { configured: false, artists: [] };
+  const today = new Date().toISOString().slice(0, 10);
+  const rows = (await env.DB.prepare('SELECT id, artist, title, release_date, data FROM projects WHERE release_date IS NULL OR release_date >= ? ORDER BY release_date IS NULL, release_date')
+    .bind(addDays(today, -365)).all()).results;
+  const byArtist = new Map();
+  for (const r of rows) {
+    const k = r.artist.trim().toLowerCase();
+    if (!byArtist.has(k)) byArtist.set(k, { artist: r.artist, projects: [], project: null });
+    const a = byArtist.get(k);
+    let data = {}; try { data = JSON.parse(r.data || '{}'); } catch { /* bad row */ }
+    a.projects.push({ id: r.id, title: r.title, release_date: r.release_date });
+    if (!a.project) a.project = { ...r, data };
+  }
+  const since = addDays(today, -182);
+  const out = [];
+  for (const a of byArtist.values()) {
+    const item = { artist: a.artist, projects: a.projects, cm_id: null, points: [], latest: null, error: null };
+    try {
+      const cmId = await projectCmId(a.project, env);
+      item.cm_id = cmId ? String(cmId) : null;
+      if (!cmId) { item.error = 'Not linked to Chartmetric yet'; out.push(item); continue; }
+      const key = `cm_listeners:${cmId}`;
+      const cached = await env.DB.prepare('SELECT value FROM sync_state WHERE key = ?').bind(key).first();
+      let c = null; try { c = cached ? JSON.parse(cached.value) : null; } catch { c = null; }
+      if (!refresh && c && Date.now() - c.at < 12 * 3600e3) { Object.assign(item, c.data); out.push(item); continue; }
+      const pts = (await cmGet(`/artist/${cmId}/stat/spotify?field=listeners&since=${since}`, env)).obj?.listeners || [];
+      const series = pts.map(p => [String(p.timestp || '').slice(0, 10), Number(p.value)]).filter(([d, v]) => d && Number.isFinite(v)).sort((x, y) => x[0].localeCompare(y[0]));
+      const last = pts.length ? pts.reduce((x, y) => String(y.timestp) > String(x.timestp) ? y : x) : null;
+      const data = { points: series, latest: last ? { value: Number(last.value), date: String(last.timestp).slice(0, 10), week: last.weekly_diff ?? null, month: last.monthly_diff ?? null, month_pct: last.monthly_diff_percent ?? null } : null };
+      await env.DB.prepare('INSERT INTO sync_state (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2').bind(key, JSON.stringify({ at: Date.now(), data })).run();
+      Object.assign(item, data);
+    } catch (e) { item.error = e.message; }
+    out.push(item);
+  }
+  return { configured: true, artists: out };
 }
