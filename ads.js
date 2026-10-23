@@ -33,7 +33,7 @@
     return g ? FP.budget.totals({ groups: [g] }).b : 0;
   };
 
-  function render(box, proj, ro, onChange) {
+  function render(box, proj, ro, onChange, hooks = {}) {
     const fresh = box.cloneNode(false); box.replaceWith(fresh); box = fresh;
     const ads = proj.data.ads ? Object.assign(defaults(proj), proj.data.ads) : defaults(proj);
     const changed = () => { if (proj.data.ads !== ads) proj.data.ads = ads; onChange(); };
@@ -109,7 +109,11 @@
       </div>${!ro && proj.data.riyl ? '<p class="hint" style="margin-top:6px"><a href="#" data-riyl>Add the project’s RIYL to related artists</a></p>' : ''}</div></section>`;
 
     const draw = () => {
-      box.innerHTML = `<p class="hint" style="margin-bottom:10px">Plan and track paid campaigns for this release. Saves with the project's <b>Save</b> button; not included in the Google Doc.</p>
+      const sheet = proj.data.ads_sheet;
+      box.innerHTML = `<div class="toolbar" style="margin-bottom:10px">
+          ${FP.safeUrl(sheet?.url) ? `<a class="btn btn-sm" href="${esc(sheet.url)}" target="_blank" rel="noopener">Open Google Sheet ↗</a>` : ''}
+          ${!ro && hooks.pushSheet ? `<button class="btn btn-sm" data-push-sheet>${sheet?.id ? 'Update Google Sheet' : 'Create Google Sheet'}</button>` : ''}
+          <span class="hint">${sheet?.updated ? `Sheet last updated ${new Date(sheet.updated).toLocaleString()}. ` : ''}Plan and track paid campaigns for this release. Saves with the project's <b>Save</b> button; not included in the Google Doc. The sheet keeps working formulas; an update replaces it.</span></div>
         <div id="ad-summary">${summary()}</div><div id="ad-table">${table()}</div>${targets()}`;
     };
     const refreshSummary = () => { box.querySelector('#ad-summary').innerHTML = summary(); };
@@ -135,6 +139,7 @@
     });
     box.addEventListener('click', e => {
       const t = e.target.closest('button, a'); if (!t) return;
+      if (t.matches('[data-push-sheet]')) { t.disabled = true; Promise.resolve(hooks.pushSheet()).finally(() => { t.disabled = false; }); return; }
       if (t.matches('[data-use-budget]')) { e.preventDefault(); ads.approved = String(onlineBudget(proj)); changed(); refreshSummary(); }
       if (t.matches('[data-riyl]')) {
         e.preventDefault();
@@ -206,5 +211,80 @@
     draw();
   }
 
-  FP.ads = { render, defaults };
+  // ── GOOGLE SHEET ───────────────────────────────────────────
+  // Same shape as the Ads tab: a summary, then each phase's campaigns with live formulas
+  // (Days, Remaining, phase totals, Planned / Spent / Unallocated), then targeting.
+  function sheetRows(proj) {
+    const ads = proj.data.ads ? Object.assign(defaults(proj), proj.data.ads) : defaults(proj);
+    const CUR = '"$"#,##0.00;[Red]-"$"#,##0.00';
+    const fmt = (o = {}) => ({ textFormat: { bold: !!o.bold, fontSize: o.size || 10, foregroundColor: o.muted ? { red: .48, green: .45, blue: .41 } : undefined },
+      wrapStrategy: o.wrap ? 'WRAP' : 'OVERFLOW_CELL', verticalAlignment: 'TOP',
+      ...(o.bg ? { backgroundColor: o.bg } : {}), ...(o.cur ? { numberFormat: { type: 'CURRENCY', pattern: CUR } } : {}),
+      ...(o.date ? { numberFormat: { type: 'DATE', pattern: 'mmm d, yyyy' } } : {}), ...(o.center ? { horizontalAlignment: 'CENTER' } : {}) });
+    const S = (v, o) => ({ userEnteredValue: { stringValue: String(v ?? '') }, userEnteredFormat: fmt(o) });
+    const N = (v, o) => (v === '' || v == null || !Number.isFinite(Number(v))) ? S('', o) : { userEnteredValue: { numberValue: Number(v) }, userEnteredFormat: fmt(o) };
+    const F = (f, o) => ({ userEnteredValue: { formulaValue: f }, userEnteredFormat: fmt(o) });
+    const D = (ymd, o) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(ymd || ''); return m ? F(`=DATE(${+m[1]},${+m[2]},${+m[3]})`, { ...o, date: true }) : S('', o); };
+    const shade = { red: .95, green: .94, blue: .92 }, band = { red: .99, green: .93, blue: .92 };
+    const COLS = ['Campaign', 'Platform', 'Ad type', 'Start', 'End', 'Days', 'Territory', 'Budget', 'Spent', 'Remaining', 'Results', 'Booked', 'Preview', 'Live',
+      'Ad sets / audiences', 'Optimisation', 'Age', 'Copy', 'Creative', 'Link'];
+    const rows = [];
+    const push = cells => { rows.push({ values: cells }); return rows.length; };   // returns the 1-based row number
+    const blank = o => Array(COLS.length).fill(0).map(() => S('', o));
+    const fill = (cells, o) => [...cells, ...blank(o).slice(cells.length)];
+
+    push([S(`${proj.artist} — ${proj.title} · Ads`, { bold: true, size: 14 })]);
+    push([S(`Fat Possum Records · updated ${new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' })} from the project system`, { muted: true })]);
+    push([]);
+    // Summary block; Planned / Spent formulas are filled in once the phase totals are known.
+    const sumRow = { approved: push([S('Approved budget', { bold: true }), N(num(ads.approved), { cur: true, bold: true })]) };
+    sumRow.planned = push([]); sumRow.spent = push([]); sumRow.unalloc = push([]);
+    push([]);
+    push(COLS.map(h => S(h, { bold: true, bg: shade })));
+    const header = rows.length;
+
+    const phaseTotals = [];
+    for (const ph of [...new Set(ads.campaigns.map(c => c.phase || ''))]) {
+      push(fill([S(ph || 'No phase', { bold: true, bg: band })], { bg: band }));
+      const first = rows.length + 1;
+      for (const c of ads.campaigns.filter(x => (x.phase || '') === ph)) {
+        const r = rows.length + 1;
+        push([S(c.name), S(c.platform), S(c.ad_type), D(c.start), D(c.end), F(`=IF(AND(ISNUMBER(D${r}),ISNUMBER(E${r})),E${r}-D${r},"")`, { center: true }),
+          S(c.territory), N(num(c.budget), { cur: true }), N(num(c.spent), { cur: true }), F(`=H${r}-I${r}`, { cur: true }), S(c.results, { wrap: true }),
+          S(c.booked ? '✓' : '', { center: true }), S(c.preview ? '✓' : '', { center: true }), S(c.live ? '✓' : '', { center: true }),
+          S(c.ad_sets, { wrap: true }), S(c.optimisation), S(c.age), S(c.copy, { wrap: true }), S(c.creative), S(c.link)]);
+      }
+      const last = rows.length, t = rows.length + 1;
+      push(fill([S('Total ' + (ph || 'No phase'), { bold: true }), ...Array(6).fill(0).map(() => S('')),
+        F(last >= first ? `=SUM(H${first}:H${last})` : '=0', { cur: true, bold: true }), F(last >= first ? `=SUM(I${first}:I${last})` : '=0', { cur: true, bold: true }),
+        F(`=H${t}-I${t}`, { cur: true, bold: true })]));
+      phaseTotals.push(t);
+    }
+    if (!phaseTotals.length) push([S('No campaigns yet.', { muted: true })]);
+    const sumOf = col => phaseTotals.length ? '=' + phaseTotals.map(r => col + r).join('+') : '=0';
+    rows[sumRow.planned - 1] = { values: [S('Planned', { bold: true }), F(sumOf('H'), { cur: true, bold: true })] };
+    rows[sumRow.spent - 1] = { values: [S('Spent', { bold: true }), F(sumOf('I'), { cur: true, bold: true })] };
+    rows[sumRow.unalloc - 1] = { values: [S('Unallocated (approved − planned)', { bold: true }), F(`=B${sumRow.approved}-B${sumRow.planned}`, { cur: true, bold: true })] };
+
+    push([]); push([]);
+    push([S('TARGETS', { bold: true, bg: band }), S('', { bg: band }), S('', { bg: band })]);
+    push(['Social remarketing', 'Related artists', 'Related media / interests'].map(h => S(h, { bold: true, bg: shade })));
+    const lists = ['remarketing', 'artists', 'media'].map(k => String(ads.targets[k] || '').split('\n').map(x => x.trim()).filter(Boolean));
+    for (let i = 0; i < Math.max(1, ...lists.map(l => l.length)); i++) push(lists.map(l => S(l[i] || '')));
+    return { rows, header };
+  }
+
+  function sheetSpec(proj) {
+    const { rows, header } = sheetRows(proj);
+    return {
+      properties: { title: `${proj.artist} — ${proj.title} (Ads)` },
+      sheets: [{
+        properties: { title: 'Ads', gridProperties: { frozenRowCount: header, frozenColumnCount: 1 } },
+        data: [{ startRow: 0, startColumn: 0, rowData: rows,
+          columnMetadata: [220, 130, 130, 100, 100, 50, 100, 100, 100, 100, 180, 60, 60, 50, 220, 120, 70, 260, 160, 220].map(pixelSize => ({ pixelSize })) }],
+      }],
+    };
+  }
+
+  FP.ads = { render, defaults, sheetSpec, sheetRows: proj => sheetRows(proj).rows };
 })();

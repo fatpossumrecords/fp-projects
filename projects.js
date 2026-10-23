@@ -108,9 +108,9 @@
       // Project Info and Budget both edit the project itself, so they share the Save bar.
       $('#pe-save').classList.toggle('hidden', !['info', 'budget', 'pnl', 'ads'].includes(tab));
       if (tab === 'info') FP.projectInfo.render($('#pe-body'), proj, ro, () => { drawTitle(); setDirty(); }, { pullTour });
-      if (tab === 'budget') FP.budget.render($('#pe-body'), proj, ro, setDirty, { pushSheet });
+      if (tab === 'budget') FP.budget.render($('#pe-body'), proj, ro, setDirty, { pushSheet: () => pushSheet('budget') });
       if (tab === 'pnl') FP.pnl.render($('#pe-body'), proj, ro, setDirty);
-      if (tab === 'ads') FP.ads.render($('#pe-body'), proj, ro, setDirty);
+      if (tab === 'ads') FP.ads.render($('#pe-body'), proj, ro, setDirty, { pushSheet: () => pushSheet('ads') });
       if (tab === 'dates') renderDates($('#pe-body'), proj);
       if (tab === 'social') renderProjectSocial($('#pe-body'), proj);
     };
@@ -156,15 +156,15 @@
       } finally { if (btn) btn.disabled = false; }
     }
 
-    // Budget → its own Google Sheet. Drive permission is asked for first, inside the
+    // Budget / Ads → each its own Google Sheet. Drive permission is asked for first, inside the
     // click (so the popup isn't blocked), then pending edits are saved and the sheet written.
-    async function pushSheet() {
+    async function pushSheet(kind) {
       if (isNew) return FP.toast('Create the project first', true);
       const token = driveToken(); token.catch(() => {});
       if (page.dirty && !(await save())) return;
       try {
-        const r = await writeBudgetSheet(proj, await token);
-        proj.data.budget_sheet = { id: r.id, tab: r.tab, url: r.url, updated: new Date().toISOString() };
+        const r = await writeSheet(proj, await token, SHEETS[kind]);
+        proj.data[SHEETS[kind].key] = { id: r.id, tab: r.tab, url: r.url, updated: new Date().toISOString() };
         const saved = await FP.saveRecord('projects', proj, { data: proj.data });
         proj = saved; proj.data = FP.projectInfo.normalize(proj.data); original = JSON.stringify(proj); setDirty();
         drawTab();
@@ -426,27 +426,32 @@
     });
   }
 
-  async function writeBudgetSheet(proj, token) {
+  const SHEETS = {
+    budget: { key: 'budget_sheet', name: 'Budget', spec: p => FP.budget.sheetSpec(p), rows: p => FP.budget.sheetRows(p) },
+    ads: { key: 'ads_sheet', name: 'Ads', spec: p => FP.ads.sheetSpec(p), rows: p => FP.ads.sheetRows(p) },
+  };
+
+  async function writeSheet(proj, token, kind) {
     const H = { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' };
     const sheetErr = async (r, what) => {
       const t = await r.text();
       if (/SERVICE_DISABLED|has not been used|is disabled/i.test(t)) return new Error('The Google Sheets API isn’t turned on for this app yet. An admin needs to enable it in Google Cloud (APIs & Services → Library → Google Sheets API).');
       return new Error(`Google Sheet ${what} failed: ${t.slice(0, 200)}`);
     };
-    const existing = proj.data.budget_sheet;
+    const existing = proj.data[kind.key];
     if (existing?.id && existing.tab != null) {
       const r = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${existing.id}:batchUpdate`, {
         method: 'POST', headers: H, body: JSON.stringify({ requests: [
           { updateCells: { range: { sheetId: existing.tab }, fields: 'userEnteredValue,userEnteredFormat' } },          // clear
-          { updateCells: { start: { sheetId: existing.tab, rowIndex: 0, columnIndex: 0 }, rows: FP.budget.sheetRows(proj), fields: 'userEnteredValue,userEnteredFormat' } },
-          { updateSpreadsheetProperties: { properties: { title: `${proj.artist} — ${proj.title} (Budget)` }, fields: 'title' } },
+          { updateCells: { start: { sheetId: existing.tab, rowIndex: 0, columnIndex: 0 }, rows: kind.rows(proj), fields: 'userEnteredValue,userEnteredFormat' } },
+          { updateSpreadsheetProperties: { properties: { title: `${proj.artist} — ${proj.title} (${kind.name})` }, fields: 'title' } },
         ] }),
       });
       if (r.ok) return { id: existing.id, tab: existing.tab, url: existing.url };
       if (r.status !== 404 && r.status !== 403) throw await sheetErr(r, 'update');
-      if (!confirm('The existing budget sheet could not be found (it may have been deleted, or was created by someone else). Create a new one?')) throw new Error('Cancelled');
+      if (!confirm(`The existing ${kind.name.toLowerCase()} sheet could not be found (it may have been deleted, or was created by someone else). Create a new one?`)) throw new Error('Cancelled');
     }
-    const r = await fetch('https://sheets.googleapis.com/v4/spreadsheets', { method: 'POST', headers: H, body: JSON.stringify(FP.budget.sheetSpec(proj)) });
+    const r = await fetch('https://sheets.googleapis.com/v4/spreadsheets', { method: 'POST', headers: H, body: JSON.stringify(kind.spec(proj)) });
     if (!r.ok) throw await sheetErr(r, 'creation');
     const sh = await r.json();
     // File it in the project docs folder when one is set (best effort).
