@@ -37,7 +37,7 @@
           <div class="c-artist">${esc(p.artist)}</div>
           <div class="c-title">${esc(p.title)}</div>
           <div class="c-meta">${p.release_date ? `<span>${FP.fmtDate(p.release_date)}</span>` : '<span>No date</span>'}${FP.statusBadge(p.status)}${p.catalog ? `<span class="mono">${esc(p.catalog)}</span>` : ''}</div>
-          <div class="c-meta">${p.pm ? `PM: ${esc(p.pm)}` : ''}${p.label ? ` · ${esc(p.label)}` : ''}${p.doc_url ? ' · 📄 Doc' : ''}</div>
+          <div class="c-meta">${[p.pm && `PM: ${esc(p.pm)}`, p.label && esc(p.label), p.doc_url && '📄 Doc'].filter(Boolean).join(' · ')}</div>
         </a>`).join('')}</div>` : '<div class="empty">No projects here yet.</div>';
     };
     main.querySelector('#p-q').oninput = e => { q = e.target.value; FP.setQuery({ q, show }); draw(); };
