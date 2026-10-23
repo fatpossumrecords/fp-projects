@@ -158,7 +158,7 @@
     if (!editable || locked) {
       const shown = c.key === 'format' && isTimeline(r) ? '<span class="badge">Timeline</span>'
         : c.key === 'release_date' ? FP.fmtDate(v) : c.key === 'status' ? FP.statusBadge(v) : esc(v);
-      return `<td${locked ? ' title="Edit on the project"' : ''} style="padding:6px 10px">${c.key === 'artist' ? `<span class="dot" style="background:${FP.artistColor(v)}"></span>` : ''}${shown}</td>`;
+      return `<td${locked ? ' title="Edit on the project"' : ''} style="padding:6px 10px">${c.key === 'artist' ? `<span class="dot" style="background:${FP.statusColor(r.status)}"></span>` : ''}${shown}</td>`;
     }
     if (c.key === 'release_date') return `<td><input type="date" data-f="${c.key}" value="${esc(v)}"></td>`;
     if (c.key === 'status') return `<td style="padding:4px 6px">${FP.statusToggle(v, { small: true })}</td>`;

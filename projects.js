@@ -34,7 +34,7 @@
         (!ql || [p.artist, p.title, p.name, p.catalog, p.pm].some(v => String(v || '').toLowerCase().includes(ql))))
         .sort((a, b) => show === 'archive' ? String(b.release_date).localeCompare(String(a.release_date)) : String(a.release_date || '9').localeCompare(String(b.release_date || '9')));
       main.querySelector('#p-list').innerHTML = list.length ? `<div class="cards">${list.map(p => `
-        <a class="card" href="#/projects/${p.id}" style="border-top:3px solid ${FP.artistColor(p.artist)}">
+        <a class="card" href="#/projects/${p.id}" style="border-top:3px solid ${FP.statusColor(p.status)}">
           <div class="c-artist">${esc(p.artist)}</div>
           <div class="c-title">${esc(p.title)}</div>
           <div class="c-meta">${p.release_date ? `<span>${FP.fmtDate(p.release_date)}</span>` : '<span>No date</span>'}${FP.statusBadge(p.status)}${p.catalog ? `<span class="mono">${esc(p.catalog)}</span>` : ''}</div>
@@ -355,7 +355,7 @@
           initialView: 'dayGridMonth', headerToolbar: { left: 'prev,next today', center: 'title', right: 'dayGridMonth,dayGridWeek,listMonth' },
           buttonText: { today: 'Today', month: 'Month', week: 'Week', list: 'List' }, height: 'auto', editable: FP.canWrite(), dayMaxEvents: 6,
           events: list.map(m => ({ id: m.id, title: `${m.done ? '✓ ' : ''}${pIdx[m.project_id]?.artist ? pIdx[m.project_id].artist + ': ' : ''}${m.title}`, start: m.date, allDay: true,
-            backgroundColor: FP.artistColor(pIdx[m.project_id]?.artist), borderColor: FP.artistColor(pIdx[m.project_id]?.artist) })),
+            backgroundColor: FP.statusColor(pIdx[m.project_id]?.status), borderColor: FP.statusColor(pIdx[m.project_id]?.status), textColor: FP.statusTextColor(pIdx[m.project_id]?.status) })),
           eventClick: info => openMilestone(ms.find(x => x.id === info.event.id), () => FP.navigate()),
           eventDrop: async info => {
             const m = ms.find(x => x.id === info.event.id);
@@ -381,7 +381,7 @@
         html += `<tr class="group"><td colspan="5">${name} · ${items.length}</td></tr>` + items.map(m => `
           <tr data-id="${m.id}"${m.done ? ' class="past"' : ''} style="cursor:pointer">
             <td class="mono" style="${name === 'Overdue' ? 'color:var(--red);font-weight:600' : ''}">${FP.fmtDate(m.date, { weekday: 'short', month: 'short', day: 'numeric' })}</td>
-            <td><span class="dot" style="background:${FP.artistColor(pIdx[m.project_id]?.artist)}"></span>${esc(label(m))}</td>
+            <td><span class="dot" style="background:${FP.statusColor(pIdx[m.project_id]?.status)}"></span>${esc(label(m))}</td>
             <td>${m.done ? '✓ ' : ''}${esc(m.title)}</td><td>${esc(m.owner)}</td>
             <td class="row-actions">${m.project_id ? `<a class="btn-ghost btn-sm" href="#/projects/${m.project_id}?tab=dates">Project ↗</a>` : ''}</td></tr>`).join('');
       }
