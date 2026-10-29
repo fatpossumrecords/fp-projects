@@ -377,7 +377,7 @@ FP.resolveConflicts = function (conflicts, who) {
         ${conflicts.map((c, i) => `<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px">
           <div style="font-weight:600;margin-bottom:6px">${esc(c.label || 'Project')}</div>
           <label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:4px"><input type="radio" name="c${i}" value="mine" checked><span><b>Yours:</b> ${show(c.mine)}</span></label>
-          <label style="display:flex;gap:8px;align-items:flex-start"><input type="radio" name="c${i}" value="theirs"><span><b>${esc(who)}’s:</b> ${show(c.theirs)}</span></label></div>`).join('')}`,
+          <label style="display:flex;gap:8px;align-items:flex-start"><input type="radio" name="c${i}" value="theirs"><span><b>${esc(who === 'You (in another window)' ? 'Other window' : who + '’s')}:</b> ${show(c.theirs)}</span></label></div>`).join('')}`,
       onSave: el => {
         done = true;
         resolve(Object.fromEntries(conflicts.map((c, i) => [c.id, el.querySelector(`[name="c${i}"]:checked`).value])));

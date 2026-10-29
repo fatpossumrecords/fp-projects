@@ -176,7 +176,7 @@
           const theirs = e.data.current;
           theirs.data = FP.projectInfo.normalize(theirs.data);
           const me = theirs.updated_by === FP.state.me?.email;
-          const who = me ? 'your other window' : FP.personName(theirs.updated_by);
+          const who = me ? 'You (in another window)' : FP.personName(theirs.updated_by);
           let r = FP.merge3(fields(base), fields(payload), fields(theirs));
           if (r.conflicts.length) {
             const picks = await FP.resolveConflicts(r.conflicts, who);
