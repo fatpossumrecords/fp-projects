@@ -86,8 +86,28 @@
     const drawTitle = () => { $('#pe-title').textContent = proj.artist || proj.title ? `${proj.artist || '…'} — ${proj.title || '…'}` : 'New project'; };
     const drawDoc = () => {
       if (isNew || !$('#pe-doc')) return;
+      const os = proj.data.onesheet_doc;
       $('#pe-doc').innerHTML = `${FP.safeUrl(proj.doc_url) ? `<a class="btn" href="${esc(proj.doc_url)}" target="_blank" rel="noopener">Open Google Doc ↗</a> ` : ''}
-        ${FP.canWrite() ? `<button class="btn" id="pe-mkdoc">${proj.doc_id ? 'Update Google Doc' : 'Create Google Doc'}</button>` : ''}`;
+        ${FP.canWrite() ? `<button class="btn" id="pe-mkdoc">${proj.doc_id ? 'Update Google Doc' : 'Create Google Doc'}</button>` : ''}
+        ${FP.safeUrl(os?.url) ? `<a class="btn" href="${esc(os.url)}" target="_blank" rel="noopener">Open One-Sheet ↗</a> ` : ''}
+        ${FP.canWrite() ? `<button class="btn" id="pe-mkone" title="One page: about, highlights, art, formats, tracklist, press, audience, contacts, announced tour dates">${os?.id ? 'Update One-Sheet' : 'Create One-Sheet'}</button>` : ''}`;
+      $('#pe-mkone')?.addEventListener('click', async e => {
+        const token = driveToken();
+        token.catch(() => {});
+        if (page.dirty && !(await save())) return;
+        e.target.disabled = true;
+        try {
+          const r = await writeGoogleDoc(proj, await token, { oneSheet: true });
+          const was = proj.data.onesheet_doc;
+          if (r.doc_id !== was?.id || r.doc_url !== was?.url) {
+            proj.data.onesheet_doc = { id: r.doc_id, url: r.doc_url };
+            if (!(await save())) return;
+          }
+          FP.toast(r.created ? 'One-sheet created and shared with fatpossum.com. Use “Open One-Sheet” to view it.' : 'One-sheet updated');
+          drawDoc();
+        } catch (err) { FP.toast(err.message, true); }
+        finally { e.target.disabled = false; }
+      });
       $('#pe-mkdoc')?.addEventListener('click', async e => {
         // Ask Google for Drive access first, while we're still inside the click,
         // so the permission popup isn't blocked. Then save and write.
@@ -515,11 +535,30 @@
     return { id: sh.spreadsheetId, tab: sh.sheets?.[0]?.properties?.sheetId ?? 0, url: sh.spreadsheetUrl, created: true };
   }
 
-  async function writeGoogleDoc(proj, token) {
-    const html = FP.projectInfo.buildDocHtml(proj);
-    const name = `${proj.artist} — ${proj.name || proj.title} (Project Doc)`;
-    if (proj.doc_id) {
-      const r = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${proj.doc_id}?uploadType=multipart&supportsAllDrives=true&fields=id,webViewLink`, {
+  // One-sheets get 0.6" margins so a full project fits on one page. Google's HTML import
+  // doesn't always keep page margins, so set them with the Docs API too (best effort: it
+  // needs the Google Docs API enabled for the app, and the default margins still work).
+  async function setOneSheetMargins(docId, token) {
+    const m = { magnitude: 43, unit: 'PT' };
+    await fetch(`https://docs.googleapis.com/v1/documents/${docId}:batchUpdate`, {
+      method: 'POST', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ requests: [{ updateDocumentStyle: { documentStyle: { marginTop: m, marginBottom: m, marginLeft: m, marginRight: m }, fields: 'marginTop,marginBottom,marginLeft,marginRight' } }] }),
+    }).catch(() => {});
+  }
+
+  // The project doc (doc_id / doc_url columns) or, with oneSheet, the one-page doc (data.onesheet_doc).
+  async function writeGoogleDoc(proj, token, { oneSheet = false } = {}) {
+    const r = await writeGoogleDocFile(proj, token, oneSheet);
+    if (oneSheet) await setOneSheetMargins(r.doc_id, token);
+    return r;
+  }
+
+  async function writeGoogleDocFile(proj, token, oneSheet) {
+    const html = FP.projectInfo.buildDocHtml(proj, { oneSheet });
+    const name = `${proj.artist} — ${proj.name || proj.title} (${oneSheet ? 'One-Sheet' : 'Project Doc'})`;
+    const existingId = oneSheet ? proj.data.onesheet_doc?.id : proj.doc_id;
+    if (existingId) {
+      const r = await fetch(`https://www.googleapis.com/upload/drive/v3/files/${existingId}?uploadType=multipart&supportsAllDrives=true&fields=id,webViewLink`, {
         method: 'PATCH', headers: { Authorization: 'Bearer ' + token, 'Content-Type': 'multipart/related; boundary=fpdoc' },
         body: multipart({ name }, html),
       });

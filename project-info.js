@@ -411,8 +411,8 @@
           <div class="field wide"><label>Project assets folder <span data-open-for="data.assets.folder">${openLink(d.assets.folder)}</span>${ro ? '' : ' · <a href="#" data-dbx="data.assets.folder">Choose in Dropbox</a>'}</label>${inp('data.assets.folder', 'url', ' placeholder="Dropbox folder with everything for this release"')}</div>
           ${ASSETS.map(([k, l]) => linkField('data.assets.' + k, l + ' link', ro ? '' : ` · <a href="#" data-dbx="data.assets.${k}">Dropbox</a>`)).join('')}
         </div>`,
-      team: () => `${ro || d.team.length < 2 ? '' : `<div class="toolbar" style="margin-bottom:6px"><span class="hint">Sort by</span>
-          <div class="seg seg-sm">${[['name', 'Name'], ['role', 'Role'], ['company', 'Company']].map(([k, l]) => `<button type="button" data-team-sort="${k}">${l}</button>`).join('')}</div></div>`}
+      team: () => `${ro ? '' : `<div class="toolbar" style="margin-bottom:6px">${btn('data-paste="team"', 'Paste contacts…')}${d.team.length < 2 ? '' : `<span class="hint" style="margin-left:8px">Sort by</span>
+          <div class="seg seg-sm">${[['name', 'Name'], ['role', 'Role'], ['company', 'Company']].map(([k, l]) => `<button type="button" data-team-sort="${k}">${l}</button>`).join('')}</div>`}</div>`}
         ${rep('team')}<p class="hint" style="margin-top:6px">Start typing a name to pick someone already saved. New people are remembered when you save, and this artist's team fills in next time.</p>`,
       formats: () => `${rep('formats')}<p class="hint" style="margin-top:6px">Each format appears as its own row on the Release Schedule and in the Timeline below.</p>`,
       timeline: () => timelineHtml(),
@@ -728,6 +728,7 @@
       }
       if (t.matches('[data-paste="tracks"]')) pasteTracks();
       if (t.matches('[data-paste="tour"]')) pasteTour();
+      if (t.matches('[data-paste="team"]')) pasteTeam();
       if (t.matches('[data-dbx]')) {
         e.preventDefault();
         try {
@@ -930,6 +931,27 @@
       if (targetIdx == null && !d.press_sections.length) $('#pp-status').textContent = 'Tip: sections are created for you if you don’t have any yet.';
     }
 
+    // People already on the team (same email, or same name) are filled in rather than doubled.
+    function pasteTeam() {
+      FP.pasteContactsModal({
+        title: 'Paste team contacts', saveLabel: 'Add to team',
+        onAdd: rows => {
+          const low = v => String(v || '').trim().toLowerCase();
+          d.team = d.team.filter(t => !blank(t.name) || !blank(t.email));
+          let added = 0, updated = 0;
+          for (const r of rows) {
+            const lib = (FP.state.contacts || []).find(c => low(c.name) === low(r.name) || (r.email && low(c.email) === low(r.email)));
+            const row = { ...Object.fromEntries(['role', 'name', 'company', 'email', 'phone'].map(k => [k, r[k] || lib?.[k] || ''])) };
+            const dup = d.team.find(t => (row.email && low(t.email) === low(row.email)) || (row.name && low(t.name) === low(row.name)));
+            if (dup) { let ch = false; for (const k in row) if (row[k] && blank(dup[k])) { dup[k] = row[k]; ch = true; } if (ch) updated++; continue; }
+            d.team.push(row); added++;
+          }
+          refresh('team'); onChange();
+          FP.toast(`Added ${added} to the team${updated ? `, filled in ${updated}` : ''}. Save to keep it.`);
+        },
+      });
+    }
+
     function pasteTour() {
       const m = FP.modal({
         title: 'Paste tour dates', wide: true, saveLabel: 'Add these dates',
@@ -1023,7 +1045,9 @@
     } catch { return ''; }
   }
 
-  function buildDocHtml(p) {
+  function buildDocHtml(p, { oneSheet = false } = {}) {
+    // oneSheet: just page 1, trimmed to fit one page for outside readers (no timeline,
+    // assets, unannounced shows or page 2).
     // Page 1 is a one-sheet (pitch, release facts, links, socials, contacts, tour).
     // Page 2 onward holds the working details. Layout columns are borderless tables,
     // because that's the only multi-column layout Google keeps when converting HTML.
@@ -1052,7 +1076,14 @@
     const tracks = d.tracks.filter(t => has(t.song));
     const formats = d.formats.filter(f => has(f.format) || has(f.title));
     const art = imageUrl(d.assets.album_art) || imageUrl(d.assets.single_art);
-    const points = String(d.selling_points || '').split('\n').map(s => s.replace(/^[-•*]\s*/, '').trim()).filter(Boolean);
+    let points = String(d.selling_points || '').split('\n').map(s => s.replace(/^[-•*]\s*/, '').trim()).filter(Boolean);
+    // One-sheet: About trimmed to ~650 characters at a sentence end, four highlights, three quotes.
+    let about = String(d.about || '');
+    if (oneSheet) {
+      points = points.slice(0, 4);
+      if (about.length > 650) { const cut = about.slice(0, 650); const end = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('.\n')); about = (end > 350 ? cut.slice(0, end + 1) : cut.replace(/\s+\S*$/, '') + '…'); }
+    }
+    const quotes = oneSheet ? String(d.press_quotes || '').split('\n').filter(x => x.trim()).slice(0, 3).join('\n') : d.press_quotes;
     const today = FP.today();
     // Same compact line for upcoming and past shows: "Oct 23, 2026   Toronto, ON — Massey Hall"
     const tourLine = t => `${date(t.date)}${gap}${esc(t.city || '')}${t.venue ? ' — ' + (FP.safeUrl(t.ticket_url) ? a(t.ticket_url, t.venue) : esc(t.venue)) : ''}${t.notes ? dot + esc(t.notes) : ''}${
@@ -1079,46 +1110,66 @@
     const dspRows = [...DSPS.flatMap(([key, l]) => [{ name: l, url: d.dsp_links[key], f: d.followers[key] },
         ...(key === 'spotify' && d.followers.spotify_listeners?.count != null ? [{ name: 'Spotify monthly listeners', url: d.dsp_links.spotify, f: d.followers.spotify_listeners }] : [])]),
       ...d.dsp_extra.map(x => ({ name: x.label || 'Link', url: x.url }))];
-    const socialsT = statTable(socialRows), dspsT = statTable(dspRows);
+    const counted = r => r.f?.count != null;
+    const linkOnly = oneSheet ? [...socialRows, ...dspRows].filter(r => !counted(r) && FP.safeUrl(r.url)) : [];
+    const socialsT = statTable(oneSheet ? socialRows.filter(counted) : socialRows), dspsT = statTable(oneSheet ? dspRows.filter(counted) : dspRows);
     const statsNote = followerDates.length ? `<p style="margin:3pt 0 0 0;font-size:7.5pt;color:${C.muted}">Audience as of ${esc(FP.fmtDate(followerDates.at(-1)))}${[...socialRows, ...dspRows].some(r => r.f?.month != null) ? '; change over the last 30 days (Chartmetric)' : ''}.</p>` : '';
-    const stats = socialsT || dspsT
-      ? cols(['50%', block('Socials', socialsT)], ['50%', block('Streaming', dspsT)]) + statsNote : '';
+    const stats = (socialsT || dspsT
+      ? cols(['50%', block('Socials', socialsT)], ['50%', block('Streaming', dspsT)]) + statsNote : '')
+      + (linkOnly.length ? para(`${muted('Also on')}${gap}${linkOnly.map(r => a(r.url, r.name.replace(/ \(.*\)$/, ''))).join(dot)}`, 'margin-top:4pt') : '');
 
     // ── PAGE 1: ONE-SHEET ──
     const header = cols(['78%', `
-        <p style="margin:0;font-size:26pt;font-weight:bold;line-height:1.1">${esc(p.artist)}</p>
-        <p style="margin:2pt 0 6pt 0;font-size:16pt;line-height:1.2">${esc(p.title)}</p>
+        <p style="margin:0;font-size:${oneSheet ? 22 : 26}pt;font-weight:bold;line-height:1.1">${esc(p.artist)}</p>
+        <p style="margin:2pt 0 ${oneSheet ? 4 : 6}pt 0;font-size:${oneSheet ? 14 : 16}pt;line-height:1.2">${esc(p.title)}</p>
         ${para([longDate(p.release_date), esc(p.label), esc(p.catalog)].filter(Boolean).join(dot), `color:${C.muted}`)}`],
       ['22%', `<p style="margin:0;text-align:right"><img src="${DOC_LOGO}" width="88" height="82" alt="Fat Possum Records"></p>`]);
 
+    const facts = [['Territory', esc(p.territory)], ['Genre', esc(d.genre)], ['Hometown', esc(d.hometown)], ['Website', FP.safeUrl(d.website) ? a(d.website) : '']].filter(([, v]) => v);
     const left = [
-      block('About', has(d.about) ? String(d.about).split(/\n\s*\n/).map(x => para(linkify(x), 'margin-bottom:6pt')).join('') : ''),
+      block('About', has(about) ? about.split(/\n\s*\n/).map(x => para(linkify(x), 'margin-bottom:6pt')).join('') : ''),
       block('Highlights', points.length ? `<ul style="margin:0 0 0 14pt;padding:0">${points.map(x => `<li style="margin:0 0 1pt 0">${linkify(x)}</li>`).join('')}</ul>` : ''),
-      block('Focus tracks', has(d.focus_tracks) ? para(esc(d.focus_tracks)) : ''),
-      block('Tracklist', tracks.length ? `<ol style="margin:0 0 0 16pt;padding:0">${tracks.map(t => `<li style="margin:0">${esc(t.song)}${t.length ? ' ' + muted(esc(t.length)) : ''}</li>`).join('')}</ol>` : ''),
-      block('For fans of', has(d.riyl) ? para(txt(d.riyl)) : ''),
-      block('Press', has(d.press_quotes) ? para(`<i>${linkify(d.press_quotes)}</i>`) : ''),
+      oneSheet ? '' : block('Focus tracks', has(d.focus_tracks) ? para(esc(d.focus_tracks)) : ''),
+      oneSheet ? block('Details', facts.length ? tight(facts.map(([l, v]) => `${muted(l)}${gap}${v}`)) : '') : '',
+      oneSheet ? block('Smart links', smart.length ? para(smart.map(x => a(x.url, x.label || 'Smart link')).join(dot)) : '') : '',
+      oneSheet ? '' : block('Tracklist', tracks.length ? `<ol style="margin:0 0 0 16pt;padding:0">${tracks.map(t => `<li style="margin:0">${esc(t.song)}${t.length ? ' ' + muted(esc(t.length)) : ''}</li>`).join('')}</ol>` : ''),
+      oneSheet ? '' : block('For fans of', has(d.riyl) ? para(txt(d.riyl)) : ''),
+      oneSheet ? '' : block('Press', has(quotes) ? para(`<i>${linkify(quotes)}</i>`) : ''),
     ].join('') || para(muted('Add “About this release” and highlights in the project’s One-sheet section.'));
 
     // Date, label and cat # are already in the header.
-    const facts = [['Territory', esc(p.territory)], ['Genre', esc(d.genre)], ['Hometown', esc(d.hometown)], ['Website', FP.safeUrl(d.website) ? a(d.website) : '']].filter(([, v]) => v);
     const right = [
-      art ? `<p style="margin:0 0 8pt 0"><img src="${esc(art)}" width="200" height="200" alt="Album art"></p>` : '',
-      block('Details', facts.length ? tight(facts.map(([l, v]) => `${muted(l)}${gap}${v}`)) : ''),
+      art ? `<p style="margin:0 0 8pt 0"><img src="${esc(art)}" width="${oneSheet ? 140 : 200}" height="${oneSheet ? 140 : 200}" alt="Album art"></p>` : '',
+      oneSheet ? '' : block('Details', facts.length ? tight(facts.map(([l, v]) => `${muted(l)}${gap}${v}`)) : ''),
+      oneSheet ? block('Formats', tight(formats.map(f => `${esc(f.format || 'Release')}${f.title && f.title !== p.title ? ' — ' + esc(f.title) : ''}${f.release_date && f.release_date !== p.release_date ? dot + date(f.release_date) : ''}${f.catalog || f.upc ? dot + muted([f.catalog, f.upc && 'UPC ' + f.upc].filter(Boolean).map(esc).join(' · ')) : ''}`)))
+        + block('Tracklist', tracks.length ? para(tracks.map((t, i) => `${muted(String(i + 1))}&nbsp;${esc(t.song).replace(/ /g, '&nbsp;')}`).join(' &nbsp; ')) : '')
+        + block('Focus tracks', has(d.focus_tracks) ? para(esc(d.focus_tracks)) : '')
+        + block('For fans of', has(d.riyl) ? para(txt(d.riyl)) : '')
+        + block('Press', has(quotes) ? para(`<i>${linkify(quotes)}</i>`) : '') :
       block('Formats', lines(formats.map(f => `${esc(f.format || 'Release')}${f.title && f.title !== p.title ? ' — ' + esc(f.title) : ''}${f.release_date && f.release_date !== p.release_date ? dot + date(f.release_date) : ''}${f.catalog ? '<br>' + muted(esc(f.catalog) + (f.upc ? ' · UPC ' + esc(f.upc) : '')) : f.upc ? '<br>' + muted('UPC ' + esc(f.upc)) : ''}`))),
-      block('Smart links', smart.length ? tight(smart.map(x => a(x.url, x.label || 'Smart link'))) : ''),
-      block('Assets', assets.length ? tight(assets.map(([n, u]) => a(u, n))) : ''),
+      oneSheet ? '' : block('Smart links', smart.length ? tight(smart.map(x => a(x.url, x.label || 'Smart link'))) : ''),
+      block('Assets', assets.length && !oneSheet ? tight(assets.map(([n, u]) => a(u, n))) : ''),
     ].join('');
 
-    const contacts = [has(p.pm) && `${esc(p.pm)}${dot}Project manager`,
+    let contacts = [has(p.pm) && `${esc(p.pm)}${dot}Project manager`,
       ...d.team.filter(t => has(t.name)).map(t => `${esc(t.name)}${t.role ? dot + esc(t.role) : ''}${t.company ? ', ' + esc(t.company) : ''}${t.email ? dot + `<a href="mailto:${esc(t.email)}">${esc(t.email)}</a>` : ''}${t.phone ? dot + esc(t.phone) : ''}`)];
 
+    if (oneSheet) contacts = contacts.filter(Boolean).slice(0, 3);
+    let upcoming = d.tour.filter(t => (has(t.date) || has(t.city)) && (!t.date || t.date >= today));
+    let moreShows = 0;
+    if (oneSheet) {
+      upcoming = upcoming.filter(t => (t.announced || t.source !== 'manual') && !t.cancelled).map(t => ({ ...t, announced: true }));
+      moreShows = Math.max(0, upcoming.length - 6); upcoming = upcoming.slice(0, 6);
+    }
     const page1 = `${header}<hr style="border:none;border-top:1px solid ${C.rule};margin:8pt 0 0 0">
       ${cols(['58%', left], ['42%', right])}
-      ${block('Timeline', tight(timeline.map(t => `${date(t.date)}${gap}${esc(t.item)}`)) + (otherNotes.length ? para(muted(linkify(otherNotes.join('\n'))), 'margin-top:3pt') : ''))}
+      ${oneSheet ? '' : block('Timeline', tight(timeline.map(t => `${date(t.date)}${gap}${esc(t.item)}`)) + (otherNotes.length ? para(muted(linkify(otherNotes.join('\n'))), 'margin-top:3pt') : ''))}
       ${stats}
-      ${block('Contacts', tight(contacts))}
-      ${block('Tour dates', tight(d.tour.filter(t => (has(t.date) || has(t.city)) && (!t.date || t.date >= today)).map(tourLine)))}`;
+      ${(() => {
+        const ct = block('Contacts', tight(contacts));
+        const tr = block('Tour dates', tight(upcoming.map(tourLine)) + (moreShows ? para(muted(`+ ${moreShows} more date${moreShows === 1 ? '' : 's'}`), 'margin-top:2pt') : ''));
+        return oneSheet && ct && tr ? cols(['45%', ct], ['55%', tr]) : ct + tr;
+      })()}`;
 
     // ── PAGE 2+: PROJECT DETAILS ── (same small section labels as page 1)
     const tcols = [['num', '#'], ['song', 'Song'], ['length', 'Length'], ['isrc', 'ISRC'], ['writers', 'Writers'], ['publishers', 'Publishers']].filter(([c]) => c === 'num' || tracks.some(t => has(t[c])));
@@ -1144,10 +1195,10 @@
     ].join('');
 
     const updated = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-    return `<html><body style="font-family:Arial;font-size:9.5pt;color:${C.ink};line-height:1.35">
+    return `<html>${oneSheet ? '<head><style>@page { margin: 0.6in; }</style></head>' : ''}<body style="font-family:Arial;font-size:${oneSheet ? 9 : 9.5}pt;color:${C.ink};line-height:1.35">
       ${page1}
-      ${page2 ? `<p style="page-break-before:always;margin:0"></p>${page2}` : ''}
-      <p style="margin:24pt 0 0 0;font-size:7.5pt;color:${C.muted}">Updated ${updated} from the Fat Possum project system. Edit the project in the app and click “Update Google Doc” to change this document; direct edits are replaced on the next update.</p>
+      ${page2 && !oneSheet ? `<p style="page-break-before:always;margin:0"></p>${page2}` : ''}
+      <p style="margin:${oneSheet ? 12 : 24}pt 0 0 0;font-size:7.5pt;color:${C.muted}">${oneSheet ? `Fat Possum Records · ${updated}` : `Updated ${updated} from the Fat Possum project system. Edit the project in the app and click “Update Google Doc” to change this document; direct edits are replaced on the next update.`}</p>
     </body></html>`;
   }
 

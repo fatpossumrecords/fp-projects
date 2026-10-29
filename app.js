@@ -408,6 +408,91 @@ FP.presence = function (resource, isEditing, onOthers) {
   };
 };
 
+// ── CONTACT PASTE ────────────────────────────────────────────
+// Reads people out of pasted text: spreadsheet rows (with or without a header), email
+// signatures, "Name <email>", "Role: Name (Company) email phone", "Name – Role, Company – email".
+// Returns [{ name, role, company, email, phone }].
+const ROLE_RE = /\b(press|publicity|publicist|pr|radio|promo(tion)?|plugger|manag(er|ement)|agent|agency|booking|a&r|sync|licens|distribut|label|marketing|digital|social|pm|project|lawyer|attorney|legal|business|accountant|tour|publish|retail|sales|playlist|dsp|video|creative|design|ads?|product|head|director|coordinator|assistant|tv|online|national|regional|college|uk|us|eu|europe|germany|de|nordics?|france|australia|canada|japan)\b/i;
+FP.parseContacts = function (text) {
+  const EMAIL = /[\w.+'-]+@[\w-]+(\.[\w-]+)+/;
+  const PHONE = /(\+?\d[\d\s().-]{6,}\d)/;
+  const lines = String(text || '').replace(/\r/g, '').split('\n').map(l => l.trim()).filter(Boolean);
+  if (!lines.length) return [];
+  // Spreadsheet paste with a header row: map columns by their names.
+  const first = lines[0].split('\t').map(h => h.trim().toLowerCase());
+  if (first.length > 1 && first.some(h => /e-?mail|name/.test(h))) {
+    const col = re => first.findIndex(h => re.test(h));
+    const ix = { name: col(/^(full )?name|contact/), role: col(/role|title|position|job/), company: col(/company|org|agency|label|firm/), email: col(/e-?mail/), phone: col(/phone|mobile|cell|tel/) };
+    const firstName = col(/first/), lastName = col(/last|surname/);
+    return lines.slice(1).map(l => {
+      const c = l.split('\t').map(x => x.trim());
+      const get = k => ix[k] >= 0 ? c[ix[k]] || '' : '';
+      const name = get('name') || [firstName >= 0 ? c[firstName] : '', lastName >= 0 ? c[lastName] : ''].filter(Boolean).join(' ');
+      return { name, role: get('role'), company: get('company'), email: get('email'), phone: get('phone') };
+    }).filter(r => r.name || r.email);
+  }
+  const out = [];
+  for (let line of lines) {
+    const r = { name: '', role: '', company: '', email: '', phone: '' };
+    const em = line.match(EMAIL); if (em) { r.email = em[0]; line = line.replace(em[0], ' '); }
+    const ph = line.match(PHONE); if (ph && ph[1].replace(/\D/g, '').length >= 7) { r.phone = ph[1].trim(); line = line.replace(ph[1], ' '); }
+    line = line.replace(/<\s*>|mailto:|\b(e-?mail|email|phone|tel|mobile|cell|m|t|e)\s*[:.]\s*(?=\s|$)/gi, ' ');
+    // "(Company)", or a qualifier like "(UK)" that stays with the role.
+    let qual = '';
+    const paren = line.match(/\(([^)]+)\)/);
+    if (paren) { if (ROLE_RE.test(paren[1])) qual = ` (${paren[1].trim()})`; else r.company = paren[1].trim(); line = line.replace(paren[0], ' '); }
+    let parts = line.split(/\t|\s+[|–—-]\s+|\s*[;:,/]\s*|\s+[@]\s+|\s+at\s+/).map(x => x.replace(/^[\s•*·-]+|[\s•*·<>-]+$/g, '').trim()).filter(Boolean);
+    const prev = out[out.length - 1];
+    // Signature blocks: a title line ("Head of Radio, Fat Possum") under a bare name line.
+    if (prev && !prev.email && !prev.role && !prev.company && !r.email && parts.some(x => ROLE_RE.test(x))) {
+      const ri = parts.findIndex(x => ROLE_RE.test(x));
+      prev.role = parts[ri] + qual; prev.company = parts.filter((_, i) => i !== ri).join(', ');
+      if (r.phone && !prev.phone) prev.phone = r.phone;
+      continue;
+    }
+    const looksName = x => /^[A-ZÀ-Ý][\p{L}'’.-]+(\s+[A-ZÀ-Ý][\p{L}'’.-]+){1,3}$/u.test(x) && !ROLE_RE.test(x);
+    const nameIdx = parts.findIndex(looksName);
+    if (nameIdx >= 0) { r.name = parts[nameIdx]; parts.splice(nameIdx, 1); }
+    for (const x of parts) {
+      if (!r.role && ROLE_RE.test(x)) r.role = x;
+      else if (!r.company) r.company = x;
+      else if (!r.name && !r.email) r.name = x;
+      else r.role = r.role ? `${r.role}, ${x}` : x;
+    }
+    if (qual) r.role = (r.role || '') + qual;
+    // A line with only an email / phone belongs to the person on the line above (signature blocks).
+    if (!r.name && prev && ((r.email && !prev.email) || (r.phone && !prev.phone) || (!r.email && !r.phone && !prev.company))) {
+      for (const k of ['email', 'phone', 'company', 'role']) if (r[k] && !prev[k]) prev[k] = r[k];
+      continue;
+    }
+    if (!r.name && r.email && !r.company) r.name = r.email.split('@')[0].split(/[._]/).map(w => w.replace(/^./, c => c.toUpperCase())).join(' ');
+    if (r.name || r.email) out.push(r);
+  }
+  return out;
+};
+
+// Paste dialog shared by a project's Team list and Settings → Contacts. onAdd(rows) does the adding.
+FP.pasteContactsModal = function ({ title = 'Paste contacts', saveLabel = 'Add these people', onAdd }) {
+  const cols = [['name', 'Name'], ['role', 'Role'], ['company', 'Company'], ['email', 'Email'], ['phone', 'Phone']];
+  let rows = [];
+  const m = FP.modal({
+    title, wide: true, saveLabel,
+    body: `<p class="hint" style="margin-bottom:8px">Paste one person per line: rows copied from a spreadsheet (a header row with Name / Email / Role helps), an email's To: list, or lines like
+        <span class="mono">Press (UK): Jane Smith, Bella Union – jane@bellaunion.com</span> or <span class="mono">Jane Smith &lt;jane@x.com&gt;</span>. Check the preview, then fix anything afterwards in the table.</p>
+      <textarea id="pc-text" rows="9" style="font-family:var(--mono);font-size:12px"></textarea><div id="pc-prev" style="margin-top:10px"></div>`,
+    onSave: () => {
+      if (!rows.length) throw new Error('No people found yet. Each line needs a name or an email.');
+      return onAdd(rows);
+    },
+  });
+  m.el.querySelector('#pc-text').addEventListener('input', e => {
+    rows = FP.parseContacts(e.target.value);
+    m.el.querySelector('#pc-prev').innerHTML = rows.length ? `<div class="hint" style="margin-bottom:4px">${rows.length} ${rows.length === 1 ? 'person' : 'people'} found</div>
+      <div class="tbl-wrap" style="max-height:260px;overflow:auto"><table class="tbl"><thead><tr>${cols.map(([, l]) => `<th>${l}</th>`).join('')}</tr></thead>
+      <tbody>${rows.map(r => `<tr>${cols.map(([k]) => `<td style="padding:4px 8px">${esc(r[k])}</td>`).join('')}</tr>`).join('')}</tbody></table></div>` : '';
+  });
+};
+
 // Minimal RFC-4180 CSV parser (quoted fields, embedded commas/newlines, "" escapes).
 FP.parseCsv = function (text) {
   const rows = []; let row = [], field = '', q = false;

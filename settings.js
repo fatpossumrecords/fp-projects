@@ -128,7 +128,7 @@
       const list = rows.filter(r => !ql || cfg.cols.some(([k]) => String(r[k] || '').toLowerCase().includes(ql)));
       box.innerHTML = `<p class="hint" style="margin-bottom:12px">${cfg.intro}</p>
         <div class="toolbar" style="margin-bottom:10px"><input type="search" id="lib-q" placeholder="Search ${cfg.title}…" value="${esc(q)}" style="width:240px">
-          ${w ? `<button class="btn" id="lib-add">+ Add</button>` : ''}<span class="hint">${rows.length} saved</span></div>
+          ${w ? `<button class="btn" id="lib-add">+ Add</button>` : ''}${w && kind === 'contacts' ? '<button class="btn" id="lib-paste">Paste contacts…</button>' : ''}<span class="hint">${rows.length} saved</span></div>
         <div class="tbl-wrap"><table class="tbl ${w ? 'edit' : ''}"><thead><tr>${cfg.cols.map(c => `<th style="min-width:130px">${c[1]}</th>`).join('')}<th></th></tr></thead><tbody>
         ${list.map(r => `<tr data-id="${r.id}">${cfg.cols.map(([k]) => `<td>${w ? (k === 'dsp'
             ? `<select data-k="${k}">${FP.options(['Spotify', 'Apple Music', 'Amazon Music', 'Deezer', 'Tidal', 'Qobuz', 'Pandora', 'YouTube Music'], r[k])}</select>`
@@ -147,6 +147,24 @@
         if (!confirm(`Remove "${r.name}" from the saved ${cfg.title}? Projects that already use it keep their copy.`)) return;
         await FP.del(`/api/${kind}/${r.id}`); rows = rows.filter(x => x !== r); draw();
       });
+      box.querySelector('#lib-paste')?.addEventListener('click', () => FP.pasteContactsModal({
+        title: 'Paste contacts', saveLabel: 'Save these contacts',
+        onAdd: async list => {
+          // Existing contacts (same name or email) get blank fields filled; everyone else is added.
+          const low = v => String(v || '').trim().toLowerCase();
+          let added = 0, updated = 0;
+          for (const c of list) {
+            if (!c.name) continue;
+            const ex = rows.find(r => low(r.name) === low(c.name) || (c.email && low(r.email) === low(c.email)));
+            if (ex) {
+              const ch = Object.fromEntries(['role', 'company', 'email', 'phone'].filter(k => c[k] && !ex[k]).map(k => [k, c[k]]));
+              if (Object.keys(ch).length) { Object.assign(ex, await FP.saveRecord(kind, ex, ch)); updated++; }
+            } else { rows.unshift(await FP.post('/api/' + kind, c)); added++; }
+          }
+          draw(); FP.loadBootstrap().catch(() => {});
+          FP.toast(`Saved ${added} new contact${added === 1 ? '' : 's'}${updated ? `, filled in ${updated}` : ''}`);
+        },
+      }));
       box.querySelector('#lib-add')?.addEventListener('click', () => {
         const name = prompt(kind === 'contacts' ? 'Name' : 'Playlist name');
         if (!name?.trim()) return;
