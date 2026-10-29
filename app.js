@@ -292,6 +292,122 @@ FP.saveRecord = async function (table, rec, changes) {
   }
 };
 
+// ── CONCURRENT EDITS ─────────────────────────────────────────
+FP.personName = email => {
+  const u = FP.state.users.find(x => x.email === email);
+  return u?.name || String(email || 'Someone').split('@')[0].replace(/^./, c => c.toUpperCase());
+};
+
+// Three-way merge for saving over someone else's save. base = what this page loaded,
+// mine = what it's saving, theirs = what's on the server now. A change made on only one
+// side is kept; both sides changing the same thing differently is a conflict, which takes
+// `picks[id]` ('mine' | 'theirs', default mine). Lists whose rows carry a `key` merge row
+// by row (adds and removes on both sides survive); other lists merge position by position
+// when neither side added or removed rows, otherwise the whole list is one conflict.
+FP.merge3 = function (base, mine, theirs, picks = {}) {
+  const conflicts = [];
+  const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const isObj = v => v != null && typeof v === 'object' && !Array.isArray(v);
+  const keyed = a => Array.isArray(a) && a.every(x => isObj(x) && x.key);
+  const rowName = x => isObj(x) ? String(x.name || x.title || x.song || x.venue || x.outlet || x.account || x.format || x.label || x.date || '').trim() : '';
+  const label = k => String(k).replace(/_/g, ' ').replace(/^./, c => c.toUpperCase());
+  function conflict(path, a, t) {
+    const id = path.map(p => p.id).join('/');
+    conflicts.push({ id, label: path.filter(p => p.id !== 'data').map(p => p.label).join(' › '), mine: a, theirs: t });
+    return picks[id] === 'theirs' ? t : a;
+  }
+  function m(b, a, t, path) {
+    if (same(a, t)) return a;
+    if (same(b, a)) return t;
+    if (same(b, t)) return a;
+    if (isObj(a) && isObj(t)) {
+      const bb = isObj(b) ? b : {}, out = {};
+      for (const k of new Set([...Object.keys(a), ...Object.keys(t)])) {
+        const v = m(bb[k], a[k], t[k], [...path, { id: k, label: label(k) }]);
+        if (v !== undefined) out[k] = v;
+      }
+      return out;
+    }
+    if (Array.isArray(a) && Array.isArray(t)) {
+      const bb = Array.isArray(b) ? b : [];
+      if (keyed(a) && keyed(t) && keyed(bb)) {
+        const by = arr => new Map(arr.map(x => [x.key, x]));
+        const B = by(bb), A = by(a), T = by(t), out = [];
+        const step = (x, k) => [...path, { id: k, label: rowName(x) || `row ${k}` }];
+        for (const x of a) {
+          if (T.has(x.key)) out.push(m(B.get(x.key), x, T.get(x.key), step(x, x.key)));
+          else if (!B.has(x.key) || !same(B.get(x.key), x)) out.push(x);   // added here, or edited here after they removed it
+        }
+        for (const [i, x] of t.entries()) {
+          if (A.has(x.key)) continue;
+          if (B.has(x.key) && same(B.get(x.key), x)) continue;             // removed here, untouched there
+          // Theirs-only row: slot it in after the row it followed in their list.
+          const prev = t.slice(0, i).reverse().find(y => out.some(o => o.key === y.key));
+          out.splice(prev ? out.findIndex(o => o.key === prev.key) + 1 : out.length, 0, x);
+        }
+        return out;
+      }
+      // Plain lists: rows edited in place merge position by position, and rows added at
+      // the end on either side are all kept. A removed or reordered row makes it a clash.
+      if (a.length >= bb.length && t.length >= bb.length) {
+        const out = bb.map((x, i) => m(x, a[i], t[i], [...path, { id: i, label: rowName(a[i]) || `row ${i + 1}` }]));
+        const extra = a.slice(bb.length);
+        for (const x of t.slice(bb.length)) if (!extra.some(y => same(x, y))) extra.push(x);
+        return [...out, ...extra];
+      }
+    }
+    return conflict(path, a, t);
+  }
+  return { value: m(base, mine, theirs, []), conflicts };
+};
+
+// Shows each conflict side by side and resolves to { [id]: 'mine' | 'theirs' }, or null if cancelled.
+FP.resolveConflicts = function (conflicts, who) {
+  const show = v => {
+    if (v == null || v === '') return '<span class="hint">(empty)</span>';
+    if (typeof v !== 'object') return esc(String(v)).slice(0, 400);
+    if (Array.isArray(v)) return `${v.length} row${v.length === 1 ? '' : 's'}: ${esc(v.map(x => typeof x === 'object' ? Object.values(x || {}).filter(y => typeof y === 'string' && y).slice(0, 2).join(' · ') : String(x)).join('; ')).slice(0, 400)}`;
+    return esc(Object.entries(v).filter(([, y]) => y !== '' && y != null && typeof y !== 'object').map(([k, y]) => `${k}: ${y}`).join(' · ')).slice(0, 400);
+  };
+  return new Promise(resolve => {
+    let done = false;
+    const m = FP.modal({
+      title: 'You both changed the same thing', wide: true, saveLabel: 'Save with these choices',
+      body: `<p class="hint" style="margin-bottom:12px">${esc(who)} saved this project while you were editing. Everything else was combined automatically; pick which version to keep for these:</p>
+        ${conflicts.map((c, i) => `<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:10px">
+          <div style="font-weight:600;margin-bottom:6px">${esc(c.label || 'Project')}</div>
+          <label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:4px"><input type="radio" name="c${i}" value="mine" checked><span><b>Yours:</b> ${show(c.mine)}</span></label>
+          <label style="display:flex;gap:8px;align-items:flex-start"><input type="radio" name="c${i}" value="theirs"><span><b>${esc(who)}’s:</b> ${show(c.theirs)}</span></label></div>`).join('')}`,
+      onSave: el => {
+        done = true;
+        resolve(Object.fromEntries(conflicts.map((c, i) => [c.id, el.querySelector(`[name="c${i}"]:checked`).value])));
+      },
+    });
+    new MutationObserver((_, obs) => { if (!m.el.isConnected) { obs.disconnect(); if (!done) resolve(null); } }).observe(document.getElementById('modal-root'), { childList: true });
+  });
+};
+
+// Heartbeat for "who else has this open". onOthers gets [{ email, name, editing }] plus the
+// record's latest save ({ updated_at, updated_by }) so the page can say someone saved.
+FP.presence = function (resource, isEditing, onOthers) {
+  let timer = null, stopped = false;
+  const ping = async () => {
+    if (stopped) return;
+    clearTimeout(timer);
+    try { const r = await FP.post('/api/presence', { resource, editing: !!isEditing() }); if (!stopped) onOthers(r.others || [], r.latest || null); }
+    catch { /* offline: try again next beat */ }
+    if (!stopped) timer = setTimeout(ping, 20000);
+  };
+  const leave = () => fetch(CONFIG.API_BASE + '/api/presence', { method: 'POST', keepalive: true,
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + FP.state.token }, body: JSON.stringify({ resource, leave: true }) }).catch(() => {});
+  window.addEventListener('pagehide', leave);
+  ping();
+  return {
+    ping,
+    stop() { stopped = true; clearTimeout(timer); window.removeEventListener('pagehide', leave); leave(); },
+  };
+};
+
 // Minimal RFC-4180 CSV parser (quoted fields, embedded commas/newlines, "" escapes).
 FP.parseCsv = function (text) {
   const rows = []; let row = [], field = '', q = false;

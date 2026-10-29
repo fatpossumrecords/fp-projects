@@ -154,6 +154,28 @@ async function route(request, url, env, ctx) {
     }
   }
 
+  // Presence: heartbeat from an open editor; returns who else has the same record open.
+  if (res === 'presence' && m === 'POST') {
+    const b = await body(request);
+    const resource = String(b.resource || '').slice(0, 120);
+    if (!/^[a-z_]+\/[\w-]+$/.test(resource)) throw new HttpError(400, 'Bad resource');
+    const t = Date.now();
+    if (b.leave) {
+      await env.DB.prepare('DELETE FROM presence WHERE resource = ? AND email = ?').bind(resource, user.email).run();
+      return json({ ok: true });
+    }
+    await env.DB.batch([
+      env.DB.prepare('INSERT INTO presence (resource, email, name, editing, at) VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT(resource, email) DO UPDATE SET name = ?3, editing = ?4, at = ?5')
+        .bind(resource, user.email, user.name || null, b.editing ? 1 : 0, t),
+      env.DB.prepare('DELETE FROM presence WHERE at < ?').bind(t - 3600e3),
+    ]);
+    const others = (await env.DB.prepare('SELECT email, name, editing FROM presence WHERE resource = ? AND email != ? AND at > ? ORDER BY name')
+      .bind(resource, user.email, t - 50e3).all()).results.map(r => ({ ...r, editing: !!r.editing }));
+    const [table, rid] = resource.split('/');
+    const latest = TABLES[table] ? await env.DB.prepare(`SELECT updated_at, updated_by FROM ${TABLES[table].table} WHERE id = ?`).bind(rid).first() : null;
+    return json({ others, latest });
+  }
+
   if (res === 'sync') {
     if (id === 'log') return json((await env.DB.prepare('SELECT * FROM sync_log ORDER BY id DESC LIMIT 100').all()).results);
     admin();

@@ -58,8 +58,11 @@
     let tab = isNew ? 'info' : (params.tab || 'info');
     const ro = !FP.canWrite();
 
+    let presence = null;
     const setDirty = () => {
+      const was = page.dirty;
       page.dirty = JSON.stringify(proj) !== original;
+      if (presence && was !== page.dirty) presence.ping();
       const d = main.querySelector('#pe-dirty');
       if (d) d.textContent = page.dirty ? 'Unsaved changes' : '';
     };
@@ -68,6 +71,7 @@
       <div class="page-head">
         <a class="btn-ghost" href="#/projects">← Projects</a>
         <h2 id="pe-title"></h2>
+        ${!isNew ? '<span id="pe-presence" class="hint"></span>' : ''}
         <span id="pe-status"></span>
         ${!isNew ? `<span id="pe-doc"></span>` : ''}
       </div>
@@ -94,8 +98,12 @@
         try {
           const r = await writeGoogleDoc(proj, await token);
           if (r.doc_id !== proj.doc_id || r.doc_url !== proj.doc_url) {
-            Object.assign(proj, await FP.saveRecord('projects', proj, r));
-            original = JSON.stringify(proj);
+            // Just these two fields, so no edit lock; updated_at stays as loaded so a later
+            // full save still notices anyone else's save in between.
+            await FP.put('/api/projects/' + proj.id, { doc_id: r.doc_id, doc_url: r.doc_url });
+            const base = JSON.parse(original);
+            for (const o of [proj, base]) { o.doc_id = r.doc_id; o.doc_url = r.doc_url; }
+            original = JSON.stringify(base); setDirty();
           }
           FP.toast(r.created ? 'Google Doc created and shared with fatpossum.com. Use “Open Google Doc” to view it.' : 'Google Doc updated');
           drawDoc();
@@ -134,7 +142,7 @@
             payload._shift_milestones = confirm(`Release date moved ${Math.abs(delta)} day${Math.abs(delta) === 1 ? '' : 's'} ${delta > 0 ? 'later' : 'earlier'}. Shift the open internal dates by the same amount?`);
           }
         }
-        const saved = await FP.saveRecord('projects', proj, payload);
+        const { saved, mergedWith } = isNew ? { saved: await FP.saveRecord('projects', proj, payload) } : await putMerging(payload);
         saved.data = FP.projectInfo.normalize(saved.data);
         // The save taught the artist profile / contacts / playlist library; refresh them.
         await FP.loadBootstrap().catch(() => {});
@@ -147,13 +155,40 @@
           return true;
         }
         proj = saved; original = JSON.stringify(proj); setDirty();
-        FP.toast('Saved');
-        drawTab();
+        FP.toast(mergedWith ? `Saved, combined with ${mergedWith}’s changes` : 'Saved');
+        drawTitle(); drawStatus(); drawTab();
         return true;
       } catch (e) {
-        if (e.status !== 409) FP.toast(e.message, true);
+        if (e.status !== 409 && !e.cancelled) FP.toast(e.message, true);
         return false;
       } finally { if (btn) btn.disabled = false; }
+    }
+
+    // Saves with the edit lock. If someone else saved since this page loaded, their
+    // version is merged with ours (FP.merge3) and only true clashes are put to the user.
+    async function putMerging(payload) {
+      let base = JSON.parse(original), expected = proj.updated_at, mergedWith = null;
+      const fields = o => ({ ...Object.fromEntries(HEAD.map(k => [k, o[k] ?? ''])), data: o.data });
+      for (let attempt = 0; attempt < 4; attempt++) {
+        try { return { saved: await FP.put('/api/projects/' + proj.id, { ...payload, _expected_updated_at: expected }), mergedWith }; }
+        catch (e) {
+          if (e.status !== 409 || !e.data?.current) throw e;
+          const theirs = e.data.current;
+          theirs.data = FP.projectInfo.normalize(theirs.data);
+          const me = theirs.updated_by === FP.state.me?.email;
+          const who = me ? 'your other window' : FP.personName(theirs.updated_by);
+          let r = FP.merge3(fields(base), fields(payload), fields(theirs));
+          if (r.conflicts.length) {
+            const picks = await FP.resolveConflicts(r.conflicts, who);
+            if (!picks) { FP.toast('Not saved. Your changes are still here.', true); throw Object.assign(new Error('Cancelled'), { cancelled: true }); }
+            r = FP.merge3(fields(base), fields(payload), fields(theirs), picks);
+          }
+          payload = { ...payload, ...r.value };
+          base = theirs; expected = theirs.updated_at;
+          if (!me) mergedWith = who;
+        }
+      }
+      throw new Error('Couldn’t save: the project keeps changing. Try again in a moment.');
     }
 
     // Budget / Ads → each its own Google Sheet. Drive permission is asked for first, inside the
@@ -165,9 +200,7 @@
       try {
         const r = await writeSheet(proj, await token, SHEETS[kind]);
         proj.data[SHEETS[kind].key] = { id: r.id, tab: r.tab, url: r.url, updated: new Date().toISOString() };
-        const saved = await FP.saveRecord('projects', proj, { data: proj.data });
-        proj = saved; proj.data = FP.projectInfo.normalize(proj.data); original = JSON.stringify(proj); setDirty();
-        drawTab();
+        if (!(await save())) return;
         FP.toast(r.created ? 'Google Sheet created. It’s only visible to you until you share it.' : 'Google Sheet updated');
       } catch (e) { FP.toast(e.message, true); }
     }
@@ -193,7 +226,28 @@
     });
     const onKey = e => { if ((e.metaKey || e.ctrlKey) && e.key === 's' && tab === 'info' && !ro) { e.preventDefault(); save(); } };
     document.addEventListener('keydown', onKey);
-    page.destroy = () => document.removeEventListener('keydown', onKey);
+    if (!isNew) {
+      presence = FP.presence('projects/' + proj.id, () => page.dirty, (others, latest) => {
+        const el = $('#pe-presence'); if (!el) return;
+        const names = list => list.map(o => esc(o.name || FP.personName(o.email)));
+        const editing = others.filter(o => o.editing), viewing = others.filter(o => !o.editing);
+        const parts = [];
+        if (editing.length) parts.push(`<b style="color:var(--yellow)">✎ ${names(editing).join(', ')} ${editing.length === 1 ? 'is' : 'are'} editing</b>`);
+        if (viewing.length) parts.push(`👁 ${names(viewing).join(', ')} ${viewing.length === 1 ? 'has' : 'have'} this open`);
+        // Someone else saved since we loaded: changes merge on save, or reload if nothing's pending.
+        if (latest?.updated_at && latest.updated_at !== proj.updated_at && latest.updated_by !== FP.state.me?.email) {
+          const who = esc(FP.personName(latest.updated_by));
+          parts.push(page.dirty ? `${who} saved changes; yours will be combined when you save`
+            : `${who} saved changes · <a href="#" data-reload>Load them</a>`);
+        }
+        el.innerHTML = parts.join(' · ');
+      });
+      $('#pe-presence')?.addEventListener('click', e => {
+        if (!e.target.matches('[data-reload]')) return;
+        e.preventDefault(); FP.navigate();
+      });
+    }
+    page.destroy = () => { document.removeEventListener('keydown', onKey); presence?.stop(); };
 
     // Status toggle in the header. On a saved project it saves straight away (just
     // the status), keeping any other unsaved edits on the form intact.
@@ -203,13 +257,14 @@
       if (!b || ro || b.dataset.status === proj.status) return;
       if (isNew) { proj.status = b.dataset.status; drawStatus(); setDirty(); return; }
       try {
-        const saved = await FP.saveRecord('projects', proj, { status: b.dataset.status });
+        // Just the status, so no edit lock; updated_at stays as loaded (see the Google Doc link above).
+        const saved = await FP.put('/api/projects/' + proj.id, { status: b.dataset.status });
         const base = JSON.parse(original);
-        for (const o of [proj, base]) { o.status = saved.status; o.updated_at = saved.updated_at; o.updated_by = saved.updated_by; }
+        for (const o of [proj, base]) o.status = saved.status;
         original = JSON.stringify(base);
         drawStatus(); setDirty();
         FP.toast(`Marked ${saved.status}`);
-      } catch (err) { if (err.status !== 409) FP.toast(err.message, true); }
+      } catch (err) { FP.toast(err.message, true); }
     });
 
     drawTitle(); drawStatus(); drawDoc(); drawTab();
