@@ -64,8 +64,77 @@
       page.dirty = JSON.stringify(proj) !== original;
       if (presence && was !== page.dirty) presence.ping();
       const d = main.querySelector('#pe-dirty');
-      if (d) d.textContent = page.dirty ? 'Unsaved changes' : '';
+      if (d && (page.dirty || !autoNote)) { d.textContent = page.dirty ? (autoHold || 'Unsaved changes') : ''; d.style.color = d.style.fontWeight = ''; }
+      if (page.dirty) scheduleAutosave();
     };
+
+    // ── AUTO-SAVE ── Saved projects save themselves 4 seconds after the last change.
+    // It holds off (and says why in the save bar) for things that need a person: a new
+    // release date (asks about shifting internal dates), a date still being typed, or a
+    // clash with someone else's edit. The Save button still works any time.
+    let autoTimer = null, autoNote = '', autoHold = '', saving = null;
+    const scheduleAutosave = () => {
+      if (isNew || ro) return;
+      clearTimeout(autoTimer);
+      autoTimer = setTimeout(autoSave, 4000);
+    };
+    const showNote = (text, warn) => {
+      autoNote = text;
+      const d = main.querySelector('#pe-dirty');
+      if (d) { d.textContent = text; d.style.color = warn ? '' : 'var(--text-muted)'; d.style.fontWeight = warn ? '' : '400'; }
+    };
+    // Remembers which field had the cursor so a redraw can put it back.
+    const focusKey = () => {
+      const el = document.activeElement;
+      if (!el || !main.contains(el)) return null;
+      const attrs = [...el.attributes].map(a => a.name).filter(a => a === 'name' || a.startsWith('data-'));
+      return attrs.length ? { sel: attrs.map(a => `[${a}="${CSS.escape(el.getAttribute(a))}"]`).join(''), start: el.selectionStart, end: el.selectionEnd } : null;
+    };
+    const restoreFocus = k => {
+      const el = k && main.querySelector(k.sel); if (!el) return;
+      el.focus(); try { if (k.start != null) el.setSelectionRange(k.start, k.end); } catch { /* not a text field */ }
+    };
+    async function autoSave() {
+      if (!page.dirty || isNew || ro || autoHold) return;
+      if (saving) { scheduleAutosave(); return; }
+      const prev = JSON.parse(original);
+      if (prev.release_date !== proj.release_date) { autoHold = 'New release date: click Save to apply it'; showNote(autoHold, true); return; }
+      const snapshot = JSON.stringify(proj);
+      if (/"0\d{3}-\d\d-\d\d"/.test(snapshot)) { scheduleAutosave(); return; }   // year half-typed in a date box
+      if (!proj.artist || !proj.title) return;
+      const payload = { data: JSON.parse(snapshot).data };
+      payload.data.formats = payload.data.formats.filter(f => f.format || f.title || f.catalog || f.upc);
+      for (const k of HEAD) payload[k] = proj[k] ?? '';
+      showNote('Saving…');
+      saving = (async () => {
+        try {
+          const { saved, mergedWith, merged } = await putMerging(payload, { auto: true });
+          saved.data = FP.projectInfo.normalize(saved.data);
+          if (merged) {
+            // Someone else's changes came in: add them to the form, keeping anything typed meanwhile.
+            const fields = o => ({ ...Object.fromEntries(HEAD.map(k => [k, o[k] ?? ''])), data: o.data });
+            const v = FP.merge3(fields(JSON.parse(snapshot)), fields(proj), fields(saved)).value;
+            const fk = focusKey();
+            proj = { ...saved, ...v };
+            // Same content as saved unless something was typed during the save (key order aside).
+            const canon = o => JSON.stringify(o, (k, x) => x && typeof x === 'object' && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort()) : x);
+            original = canon(fields(saved)) === canon(v) ? JSON.stringify(proj) : JSON.stringify(saved);
+            drawTitle(); drawStatus(); drawTab(); restoreFocus(fk);
+            if (mergedWith) FP.toast(`Combined with ${mergedWith}’s changes`);
+          } else {
+            proj.updated_at = saved.updated_at; proj.updated_by = saved.updated_by;
+            const base = JSON.parse(snapshot); base.updated_at = saved.updated_at; base.updated_by = saved.updated_by;
+            original = JSON.stringify(base);
+          }
+          autoNote = ''; setDirty();
+          if (!page.dirty) showNote(`Saved ${new Date().toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`);
+        } catch (e) {
+          if (e.needsChoice) { autoHold = `${e.who} changed the same thing: click Save to choose`; showNote(autoHold, true); }
+          else { showNote('Couldn’t auto-save: click Save', true); if (e.status !== 409) FP.toast(e.message, true); }
+        } finally { saving = null; }
+      })();
+      await saving;
+    }
 
     main.innerHTML = `
       <div class="page-head">
@@ -148,6 +217,9 @@
     });
 
     async function save() {
+      clearTimeout(autoTimer);
+      if (saving) await saving;
+      autoHold = ''; autoNote = '';
       if (!proj.artist || !proj.title) { FP.toast('Artist and title are required', true); return false; }
       const btn = $('#pe-savebtn'); if (btn) btn.disabled = true;
       try {
@@ -186,11 +258,11 @@
 
     // Saves with the edit lock. If someone else saved since this page loaded, their
     // version is merged with ours (FP.merge3) and only true clashes are put to the user.
-    async function putMerging(payload) {
-      let base = JSON.parse(original), expected = proj.updated_at, mergedWith = null;
+    async function putMerging(payload, { auto = false } = {}) {
+      let base = JSON.parse(original), expected = proj.updated_at, mergedWith = null, merged = false;
       const fields = o => ({ ...Object.fromEntries(HEAD.map(k => [k, o[k] ?? ''])), data: o.data });
       for (let attempt = 0; attempt < 4; attempt++) {
-        try { return { saved: await FP.put('/api/projects/' + proj.id, { ...payload, _expected_updated_at: expected }), mergedWith }; }
+        try { return { saved: await FP.put('/api/projects/' + proj.id, { ...payload, _expected_updated_at: expected }), mergedWith, merged }; }
         catch (e) {
           if (e.status !== 409 || !e.data?.current) throw e;
           const theirs = e.data.current;
@@ -198,13 +270,14 @@
           const me = theirs.updated_by === FP.state.me?.email;
           const who = me ? 'You (in another window)' : FP.personName(theirs.updated_by);
           let r = FP.merge3(fields(base), fields(payload), fields(theirs));
+          if (r.conflicts.length && auto) throw Object.assign(new Error('Needs a choice'), { needsChoice: true, who });
           if (r.conflicts.length) {
             const picks = await FP.resolveConflicts(r.conflicts, who);
             if (!picks) { FP.toast('Not saved. Your changes are still here.', true); throw Object.assign(new Error('Cancelled'), { cancelled: true }); }
             r = FP.merge3(fields(base), fields(payload), fields(theirs), picks);
           }
           payload = { ...payload, ...r.value };
-          base = theirs; expected = theirs.updated_at;
+          base = theirs; expected = theirs.updated_at; merged = true;
           if (!me) mergedWith = who;
         }
       }
@@ -267,7 +340,7 @@
         e.preventDefault(); FP.navigate();
       });
     }
-    page.destroy = () => { document.removeEventListener('keydown', onKey); presence?.stop(); };
+    page.destroy = () => { clearTimeout(autoTimer); document.removeEventListener('keydown', onKey); presence?.stop(); };
 
     // Status toggle in the header. On a saved project it saves straight away (just
     // the status), keeping any other unsaved edits on the form intact.
