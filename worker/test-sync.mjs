@@ -71,7 +71,7 @@ globalThis.fetch = async (url, opts = {}) => {
 };
 
 const env = { DB, SESSION_SECRET: 's', DEV_BYPASS_EMAIL: 'patrick@fatpossum.com', ADMIN_EMAIL: 'patrick@fatpossum.com', ALLOWED_ORIGINS: 'http://x',
-  GOOGLE_SA_EMAIL: 'sa@x', GOOGLE_SA_KEY: privateKey, CHARTMETRIC_REFRESH_TOKEN: 'rt', CAL_RELEASES_ID: 'REL', CAL_INTERNAL_ID: 'INT', APP_URL: 'https://app/' };
+  GOOGLE_SA_EMAIL: 'sa@x', GOOGLE_SA_KEY: privateKey, CHARTMETRIC_REFRESH_TOKEN: 'rt', CHARTMETRIC_SCHEDULED: 'true', CAL_RELEASES_ID: 'REL', CAL_INTERNAL_ID: 'INT', APP_URL: 'https://app/' };
 const waits = [];
 const ctx = { waitUntil: p => waits.push(p) };
 const call = async (method, path, body, token) => {
