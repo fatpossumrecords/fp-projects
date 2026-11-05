@@ -55,7 +55,7 @@
     proj.data = FP.projectInfo.normalize(proj.data);
     if (isNew && proj.artist) { const prof = FP.projectInfo.artistProfile(proj.artist); if (prof) FP.projectInfo.applyProfile(proj, prof); }
     let original = JSON.stringify(proj);
-    let tab = isNew ? 'info' : (params.tab || 'info');
+    let tab = isNew || !['info', 'budget', 'ads', 'dates'].includes(params.tab) ? 'info' : params.tab;
     const ro = !FP.canWrite();
 
     let presence = null;
@@ -144,7 +144,7 @@
         <span id="pe-status"></span>
         ${!isNew ? `<span id="pe-doc"></span>` : ''}
       </div>
-      ${!isNew ? `<div class="tabs"><button data-t="info">Project Info</button><button data-t="budget">Budget</button><button data-t="pnl">P&amp;L</button><button data-t="ads">Ads</button><button data-t="dates">Internal Dates</button><button data-t="social">Social</button></div>` : ''}
+      ${!isNew ? `<div class="tabs"><button data-t="info">Project Info</button><button data-t="budget">Budget</button><button data-t="ads">Ads</button><button data-t="dates">Internal Dates</button></div>` : ''}
       <div class="page-body" id="pe-body"></div>
       <div class="savebar" id="pe-save">
         ${ro ? '<span class="hint">Read-only access</span>' : `<button class="btn-primary" id="pe-savebtn">${isNew ? 'Create project' : 'Save'}</button><span class="dirty" id="pe-dirty"></span>`}
@@ -155,28 +155,8 @@
     const drawTitle = () => { $('#pe-title').textContent = proj.artist || proj.title ? `${proj.artist || '…'} — ${proj.title || '…'}` : 'New project'; };
     const drawDoc = () => {
       if (isNew || !$('#pe-doc')) return;
-      const os = proj.data.onesheet_doc;
       $('#pe-doc').innerHTML = `${FP.safeUrl(proj.doc_url) ? `<a class="btn" href="${esc(proj.doc_url)}" target="_blank" rel="noopener">Open Google Doc ↗</a> ` : ''}
-        ${FP.canWrite() ? `<button class="btn" id="pe-mkdoc">${proj.doc_id ? 'Update Google Doc' : 'Create Google Doc'}</button>` : ''}
-        ${FP.safeUrl(os?.url) ? `<a class="btn" href="${esc(os.url)}" target="_blank" rel="noopener">Open One-Sheet ↗</a> ` : ''}
-        ${FP.canWrite() ? `<button class="btn" id="pe-mkone" title="One page: about, highlights, art, formats, tracklist, press, audience, contacts, announced tour dates">${os?.id ? 'Update One-Sheet' : 'Create One-Sheet'}</button>` : ''}`;
-      $('#pe-mkone')?.addEventListener('click', async e => {
-        const token = driveToken();
-        token.catch(() => {});
-        if (page.dirty && !(await save())) return;
-        e.target.disabled = true;
-        try {
-          const r = await writeGoogleDoc(proj, await token, { oneSheet: true });
-          const was = proj.data.onesheet_doc;
-          if (r.doc_id !== was?.id || r.doc_url !== was?.url) {
-            proj.data.onesheet_doc = { id: r.doc_id, url: r.doc_url };
-            if (!(await save())) return;
-          }
-          FP.toast(r.created ? 'One-sheet created and shared with fatpossum.com. Use “Open One-Sheet” to view it.' : 'One-sheet updated');
-          drawDoc();
-        } catch (err) { FP.toast(err.message, true); }
-        finally { e.target.disabled = false; }
-      });
+        ${FP.canWrite() ? `<button class="btn" id="pe-mkdoc">${proj.doc_id ? 'Update Google Doc' : 'Create Google Doc'}</button>` : ''}`;
       $('#pe-mkdoc')?.addEventListener('click', async e => {
         // Ask Google for Drive access first, while we're still inside the click,
         // so the permission popup isn't blocked. Then save and write.
@@ -203,16 +183,14 @@
     const drawTab = () => {
       main.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === tab));
       // Project Info and Budget both edit the project itself, so they share the Save bar.
-      $('#pe-save').classList.toggle('hidden', !['info', 'budget', 'pnl', 'ads'].includes(tab));
+      $('#pe-save').classList.toggle('hidden', !['info', 'budget', 'ads'].includes(tab));
       if (tab === 'info') FP.projectInfo.render($('#pe-body'), proj, ro, () => { drawTitle(); setDirty(); }, { pullTour });
       if (tab === 'budget') FP.budget.render($('#pe-body'), proj, ro, setDirty, { pushSheet: () => pushSheet('budget') });
-      if (tab === 'pnl') FP.pnl.render($('#pe-body'), proj, ro, setDirty);
       if (tab === 'ads') FP.ads.render($('#pe-body'), proj, ro, setDirty, { pushSheet: () => pushSheet('ads') });
       if (tab === 'dates') renderDates($('#pe-body'), proj);
-      if (tab === 'social') renderProjectSocial($('#pe-body'), proj);
     };
     main.querySelectorAll('.tabs button').forEach(b => b.onclick = () => {
-      if (['info', 'budget', 'pnl', 'ads'].includes(tab) && !['info', 'budget', 'pnl', 'ads'].includes(b.dataset.t) && page.dirty && !confirm('You have unsaved changes on Project Info. Switch tabs anyway? (They’ll stay until you leave the project.)')) return;
+      if (['info', 'budget', 'ads'].includes(tab) && !['info', 'budget', 'ads'].includes(b.dataset.t) && page.dirty && !confirm('You have unsaved changes on Project Info. Switch tabs anyway? (They’ll stay until you leave the project.)')) return;
       tab = b.dataset.t; FP.setQuery({ tab: tab === 'info' ? '' : tab }); drawTab();
     });
 
@@ -458,17 +436,6 @@
     });
   }
   FP.openMilestone = openMilestone;
-
-  // ── PROJECT SOCIAL TAB ─────────────────────────────────────
-  async function renderProjectSocial(box, proj) {
-    const posts = (await FP.get('/api/social?artist=' + encodeURIComponent(proj.artist))).filter(p => !p.project_id || p.project_id === proj.id);
-    box.innerHTML = `<div class="toolbar" style="margin-bottom:12px">
-        <a class="btn" href="#/social?artist=${encodeURIComponent(proj.artist)}">Open ${esc(proj.artist)} in the Social Schedule →</a></div>
-      ${posts.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Platform</th><th>Type</th><th>Caption</th><th>Status</th></tr></thead><tbody>
-        ${posts.map(p => `<tr><td class="mono">${FP.fmtDate(p.date)}${p.time ? ' ' + esc(p.time) : ''}</td><td>${esc(p.platform)}</td><td>${esc(p.post_type)}</td>
-          <td style="max-width:420px">${esc((p.caption || '').slice(0, 140))}</td><td>${FP.statusBadge(p.status)}</td></tr>`).join('')}
-      </tbody></table></div>` : `<div class="empty">No social posts planned for ${esc(proj.artist)} yet.</div>`}`;
-  }
 
   // ── ALL INTERNAL DATES (#/dates) ───────────────────────────
   FP.route('dates', async (main, _rest, params) => {
