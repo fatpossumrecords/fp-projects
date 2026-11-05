@@ -1,7 +1,7 @@
 /* ============================================================
    DASHBOARD — Spotify monthly listeners for current projects
    One stat tile per artist: value · change vs 30 days ago · sparkline.
-   Data comes from Chartmetric via the Worker (cached 12 hours).
+   Built from stored readings (earlier Chartmetric history + Muse's weekly updates).
    ============================================================ */
 (function () {
   const esc = FP.esc;
@@ -31,21 +31,18 @@
           <select id="db-sort"><option value="release">Sort: release date</option><option value="growth">Sort: biggest growth</option><option value="listeners">Sort: most listeners</option></select>
           <span class="spacer"></span>
           <div class="seg" id="db-view"><button data-v="tiles">Tiles</button><button data-v="table">Table</button></div>
-          <button class="btn btn-sm" id="db-refresh" title="Fetch fresh numbers from Chartmetric">Refresh</button>
         </div>
         <h3 style="font-size:11px;text-transform:uppercase;letter-spacing:1.5px;color:var(--text-muted);margin:0 0 4px">Spotify monthly listeners</h3>
-        <p class="hint" style="margin:0 0 12px">Artists with a current project (unreleased, or released in the last 12 months).</p>
+        <p class="hint" style="margin:0 0 12px">Artists with a current project (unreleased, or released in the last 12 months). Updated weekly by Muse.</p>
         <div id="db-body"><div class="empty">Loading…</div></div>
       </div>`;
     const $ = s => main.querySelector(s);
     $('#db-sort').value = ui.sort;
     let data = null;
 
-    const load = async refresh => {
-      $('#db-status').textContent = refresh ? 'Refreshing from Chartmetric…' : '';
-      try { data = await FP.get('/api/dashboard/listeners' + (refresh ? '?refresh=1' : '')); }
+    const load = async () => {
+      try { data = await FP.get('/api/dashboard/listeners'); }
       catch (e) { $('#db-body').innerHTML = `<div class="empty">Couldn't load listener data: ${esc(e.message)}</div>`; return; }
-      $('#db-status').textContent = '';
       draw();
     };
 
@@ -53,7 +50,6 @@
       main.querySelectorAll('#db-range button').forEach(b => b.classList.toggle('on', +b.dataset.v === ui.range));
       main.querySelectorAll('#db-view button').forEach(b => b.classList.toggle('on', b.dataset.v === ui.view));
       const body = $('#db-body');
-      if (!data.configured) { body.innerHTML = '<div class="empty">Connect Chartmetric to see listener trends.</div>'; return; }
       const items = data.artists.map(a => ({ ...a, w: windowed(a) }));
       const withData = items.filter(a => a.w.pts.length >= 2);
       if (ui.sort === 'growth') items.sort((x, y) => (y.w.pct ?? -1e9) - (x.w.pct ?? -1e9));
@@ -78,7 +74,7 @@
       return `<div class="card" style="cursor:default;gap:4px;border-top:3px solid ${FP.statusColor(proj.status)}">
         <div style="display:flex;align-items:baseline;gap:6px"><div class="c-artist" style="flex:1">${esc(a.artist)}</div>
           <a class="hint" href="#/projects/${proj.id}" title="${esc(a.projects.map(p => p.title).join(', '))}">${esc(proj.title)}${a.projects.length > 1 ? ` +${a.projects.length - 1}` : ''} ↗</a></div>
-        ${a.error && !a.latest ? `<div class="hint" style="padding:16px 0">${esc(a.error)}. Use <b>Look up online</b> on the project to link it.</div>` : `
+        ${a.error && !a.latest ? `<div class="hint" style="padding:16px 0">${esc(a.error)}.</div>` : `
           <div style="font-size:24px;font-weight:600;line-height:1.1">${compact(a.latest?.value)}</div>
           <div style="font-size:12px">${delta(a.w, label)}</div>
           ${spark(a)}`}
@@ -137,7 +133,6 @@
     main.querySelectorAll('#db-range button').forEach(b => b.onclick = () => { ui.range = +b.dataset.v; saveUi(); draw(); });
     main.querySelectorAll('#db-view button').forEach(b => b.onclick = () => { ui.view = b.dataset.v; saveUi(); draw(); });
     $('#db-sort').onchange = e => { ui.sort = e.target.value; saveUi(); draw(); };
-    $('#db-refresh').onclick = () => load(true);
-    load(false);
+    load();
   });
 })();

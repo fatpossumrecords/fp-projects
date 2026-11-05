@@ -184,7 +184,7 @@
       main.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.t === tab));
       // Project Info and Budget both edit the project itself, so they share the Save bar.
       $('#pe-save').classList.toggle('hidden', !['info', 'budget', 'ads'].includes(tab));
-      if (tab === 'info') FP.projectInfo.render($('#pe-body'), proj, ro, () => { drawTitle(); setDirty(); }, { pullTour });
+      if (tab === 'info') FP.projectInfo.render($('#pe-body'), proj, ro, () => { drawTitle(); setDirty(); });
       if (tab === 'budget') FP.budget.render($('#pe-body'), proj, ro, setDirty, { pushSheet: () => pushSheet('budget') });
       if (tab === 'ads') FP.ads.render($('#pe-body'), proj, ro, setDirty, { pushSheet: () => pushSheet('ads') });
       if (tab === 'dates') renderDates($('#pe-body'), proj);
@@ -276,17 +276,6 @@
       } catch (e) { FP.toast(e.message, true); }
     }
 
-    // Saves pending edits first, then the server merges Chartmetric listings into the stored tour list.
-    async function pullTour() {
-      if (isNew) return FP.toast('Create the project first', true);
-      if (page.dirty && !(await save())) return;
-      try {
-        const r = await FP.post(`/api/projects/${proj.id}/tour/pull`);
-        proj = r.project; proj.data = FP.projectInfo.normalize(proj.data); original = JSON.stringify(proj); setDirty();
-        drawTab();
-        FP.toast(r.found ? `Found ${r.found} listed show${r.found === 1 ? '' : 's'}: ${r.added} added, ${r.updated} updated` : 'No upcoming shows listed for this artist');
-      } catch (e) { FP.toast(e.message, true); }
-    }
 
     $('#pe-savebtn')?.addEventListener('click', save);
     $('#pe-delete')?.addEventListener('click', async () => {

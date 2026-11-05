@@ -381,7 +381,7 @@
 
     const SECTIONS = {
       overview: () => `<div class="grid">
-        ${FP.field('Artist *', inp('artist', 'text', ` list="${FP.artistDatalist()}" autocomplete="off"`) + `<span class="hint"><span data-profile-hint></span>${ro ? '' : ' <a href="#" data-lookup>Look up online</a>'}</span>`)}
+        ${FP.field('Artist *', inp('artist', 'text', ` list="${FP.artistDatalist()}" autocomplete="off"`) + `<span class="hint"><span data-profile-hint></span>${ro || proj.id ? '' : ' <a href="#" data-lookup>Look up online</a>'}</span>`)}
         ${FP.field('Title *', inp('title'))}
         ${FP.field('Project name', inp('name', 'text', ' placeholder="Defaults to the title"'))}
         ${FP.field('Release date', inp('release_date', 'date'))}
@@ -399,9 +399,7 @@
         ${FP.field('Focus tracks', inp('data.focus_tracks', 'text', ' placeholder="e.g. Bird Songs For Atomic Skies, Eleven Saints"'), 'wide')}
       </div><p class="hint" style="margin-top:6px">These make up the one-sheet on page 1 of the Google Doc, with RIYL, press quotes, formats, tracklist and tour dates.</p>`,
       social: () => `${linkTable('social', SOCIALS)}<div style="margin-top:10px">${rep('social_extra')}</div>
-        ${ro ? '' : FP.state.sources?.chartmetric
-          ? `<p style="margin-top:10px"><button class="btn btn-sm" data-refresh-followers>Update follower counts from Chartmetric</button> <span class="hint">${d.chartmetric_id ? 'Linked to Chartmetric.' : 'Uses the Spotify link to find the artist, or run “Look up online” first.'}</span></p>`
-          : `<p style="margin-top:10px"><button class="btn btn-sm" data-refresh-followers>Update YouTube &amp; Spotify counts</button> <span class="hint">Instagram, TikTok, Facebook and X don't share counts with other apps, so type those in.</span></p>`}`,
+        <p class="hint" style="margin-top:10px">Counts are filled in when the project is created (Look up online), then updated weekly by Muse. You can also type them in.</p>`,
       dsps: () => `${linkTable('dsp_links', DSPS)}<div style="margin-top:10px">${rep('dsp_extra')}</div><p class="hint" style="margin-top:6px">Artist profile pages on each service.</p>`,
       riyl: () => ta('data.riyl', 2, 'Recommended if you like…'),
       smart_links: () => rep('smart_links'),
@@ -431,9 +429,8 @@
       radio: () => ta('data.radio', 3),
       syncs: () => ta('data.syncs', 3),
       tour: () => `<div class="toolbar" style="margin-bottom:8px">
-          ${FP.state.sources?.chartmetric && hooks.pullTour ? btn('data-pull-tour', 'Pull tour dates (Chartmetric)') : ''}
           ${btn('data-paste="tour"', 'Paste tour dates…')}
-          <span class="hint">${d.tour_synced_at ? `Last pulled ${new Date(d.tour_synced_at).toLocaleString()}. ` : ''}${FP.state.sources?.chartmetric ? 'Announced shows are pulled from Songkick, Ticketmaster, SeatGeek and JamBase (via Chartmetric), and refreshed daily.' : 'Paste a list from an agent email, a spreadsheet or a website, one show per line.'}</span></div>
+          <span class="hint">${d.tour_synced_at ? `Last updated ${new Date(d.tour_synced_at).toLocaleString()}. ` : ''}Muse adds announced shows weekly. Paste a list from an agent email, a spreadsheet or a website, one show per line.</span></div>
         ${tourTable()}`,
       recording: () => ta('data.recording', 4),
     };
@@ -693,22 +690,6 @@
         FP.toast(`Merged ${groups.length} duplicate show${groups.length === 1 ? '' : 's'}. Save to keep it.`);
       }
       if (t.matches('[data-tour-restore]')) { e.preventDefault(); d.tour_dismissed = []; refresh('tour'); onChange(); FP.toast('They’ll come back on the next pull. Save to keep this.'); }
-      if (t.matches('[data-pull-tour]')) { t.disabled = true; try { await hooks.pullTour(); } finally { t.disabled = false; } }
-      if (t.matches('[data-refresh-followers]')) {
-        if (!d.social.youtube && !d.dsp_links.spotify) return FP.toast('Add the YouTube channel and/or Spotify artist link first', true);
-        t.disabled = true;
-        try {
-          const r = await FP.post('/api/followers', { youtube: d.social.youtube || null, spotify: d.dsp_links.spotify || null, chartmetric_id: d.chartmetric_id || null });
-          Object.assign(d.followers, r.counts);
-          if (r.chartmetric_id) d.chartmetric_id = r.chartmetric_id;
-          refresh('social'); refresh('dsps'); onChange();
-          const name = k => ({ youtube: 'YouTube', spotify: 'Spotify', chartmetric: 'Chartmetric' })[k] || k;
-          const got = Object.keys(r.counts), bad = Object.entries(r.errors);
-          FP.toast([got.length && (r.source === 'Chartmetric' ? `Updated ${got.length} counts from Chartmetric. Save to keep.` : `Updated ${got.map(name).join(' and ')}. Save to keep.`),
-            ...bad.map(([k, m]) => `${name(k)}: ${m}`)].filter(Boolean).join(' · ') || 'Nothing to update', !got.length);
-        } catch (err) { FP.toast(err.message, true); }
-        finally { t.disabled = false; }
-      }
       if (t.matches('[data-notes-to-timeline]')) {
         const { dated, other } = splitDatedLines(d.timeline_notes);
         if (!confirm(`Add ${dated.length} item(s) to the timeline? They'll also appear on the Release Schedule when you save:\n\n${dated.map(x => `${FP.fmtDate(x.date)} — ${x.item}`).join('\n')}`)) return;

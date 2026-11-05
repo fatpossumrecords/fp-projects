@@ -160,8 +160,8 @@ ok(!(await A('GET', '/api/releases')).some(r => r.id === tr.id) && cals.REL.get(
 const cm = await A('GET', '/api/chartmetric/artist/2000');
 ok(cm.website === 'http://www.ninasky.com/' && cm.social.instagram === 'https://www.instagram.com/ninasky/' && cm.dsp_links.apple === 'https://music.apple.com/us/artist/123', 'Chartmetric links map to website / socials / DSPs (genius ignored)');
 ok(cm.hometown === 'Queens, US' && cm.genre === 'Pop, R&B/Soul, Dance' && cm.riyl === 'Ciara, Cassie', 'Chartmetric hometown, genre and RIYL');
-ok(cm.followers.instagram.count === 52400 && cm.followers.instagram.month === 1200 && cm.followers.instagram.month_pct === 2.34 && cm.followers.instagram.asof === '2026-10-20', 'Chartmetric growth: latest point with 30-day change');
-ok(cm.followers.spotify_listeners.month === -239091 && cm.followers.tiktok.count === 9100 && cm.followers.tiktok.month == null && !cm.followers.facebook, 'falls back to the plain count when a stat call fails; nulls skipped');
+ok(cm.followers.instagram.count === 52000 && cm.followers.instagram.month == null && cm.followers.spotify_listeners.count === 106103812, 'lookup takes counts from the artist record, with no per-platform growth calls');
+ok(cm.followers.tiktok.count === 9100 && !cm.followers.facebook, 'lookup skips empty counts');
 const fr = await A('POST', '/api/followers', { spotify: 'https://open.spotify.com/artist/3TVXtAsR1Inumwj472S9r4' });
 ok(fr.source === 'Chartmetric' && fr.chartmetric_id === '2000' && fr.counts.tiktok.count === 9100, 'follower refresh finds the artist by Spotify link via Chartmetric');
 
@@ -240,14 +240,19 @@ ok((await A('GET', '/api/releases/' + mine.id)).release_date === '2027-01-15', '
 ok(!cals.REL.get('foreign0').extendedProperties && cals.REL.get('foreign0').summary === 'Peter Green Birthday', 'shared calendar: other events are left untouched');
 env.CAL_RELEASES_SHARED = '';
 
-// 15. dashboard: monthly listeners per artist with a current project
+// 15. dashboard: built from stored numbers only, never a Chartmetric call
+let cmCalls = 0;
+const fetch0 = globalThis.fetch;
+globalThis.fetch = async (url, opts) => { if (new URL(url).host === 'api.chartmetric.com') cmCalls++; return fetch0(url, opts); };
+const dp = await A('POST', '/api/projects', { artist: 'Dash Artist', title: 'Dash', release_date: '2027-05-01', data: { chartmetric_id: '777',
+  followers: { spotify_listeners: { count: 5200, asof: '2026-11-01', prev: { count: 5000, asof: '2026-10-25' } } } } });
+DB.prepare("INSERT INTO sync_state (key, value) VALUES ('cm_listeners:777', ?)").bind(JSON.stringify({ at: 0, data: { points: [['2026-09-01', 4000], ['2026-10-01', 4600]] } })).run();
 const dash = await A('GET', '/api/dashboard/listeners');
-const nina = dash.artists.find(x => x.artist === 'G');
-ok(dash.configured && nina && nina.points.length === 3 && nina.points[0][0] === '2026-08-01' && nina.latest.value === 106000 && nina.latest.month_pct === 1.9, 'dashboard returns a listener series and latest change per artist');
-const unlinked = dash.artists.find(x => x.artist === 'E' || x.artist === 'C');
-ok(!unlinked || unlinked.error, 'artists without a Chartmetric link are flagged, not failed');
-const dash2 = await A('GET', '/api/dashboard/listeners');
-ok(JSON.stringify(dash2.artists.find(x => x.artist === 'G').points) === JSON.stringify(nina.points), 'second call is served from the 12-hour cache');
+const da = dash.artists.find(x => x.artist === 'Dash Artist');
+ok(da && JSON.stringify(da.points) === JSON.stringify([['2026-09-01', 4000], ['2026-10-01', 4600], ['2026-10-25', 5000], ['2026-11-01', 5200]]) && da.latest.value === 5200,
+  'dashboard joins cached Chartmetric history with the stored current / previous readings');
+ok(cmCalls === 0, 'dashboard makes no Chartmetric calls');
+globalThis.fetch = fetch0;
 
 // 12. scheduled Chartmetric refresh (runs as the cron would)
 const tp4 = await A('POST', '/api/projects', { artist: 'Nina Sky', title: 'Weekly', release_date: '2027-02-01', data: { chartmetric_id: '2000', followers: { instagram: { count: 50000, asof: '2026-09-01' } } } });
@@ -258,6 +263,53 @@ ok(tp4b.data.tour?.length === 3 && tp4b.data.tour_synced_at, 'scheduled run also
 ok(tp4b.updated_at === tp4.updated_at, 'background refresh does not bump updated_at (no save conflicts for editors)');
 await worker.scheduled({}, env, ctx); while (waits.length) await waits.shift();
 ok((await A('GET', '/api/projects/' + tp4.id)).data.followers_synced_at === tp4b.data.followers_synced_at, 'a second run the same week skips projects already refreshed');
+
+// 16. Muse agent API (bearer token, followers + tour only)
+env.MUSE_API_TOKEN = 'muse-secret-token';
+const M = (method, path, body, token = 'muse-secret-token') => call(method, '/api/muse' + path, body, token);
+const bad = await M('GET', '/projects', null, 'wrong');
+ok(bad.error && /token/i.test(bad.error), 'muse: a wrong token is refused');
+const noTok = await call('GET', '/api/muse/projects');
+ok(noTok.error, 'muse: no token is refused');
+const mp = await A('POST', '/api/projects', { artist: 'Muse Artist', title: 'Muse Test', release_date: '2027-06-01', data: {
+  social: { instagram: 'https://instagram.com/m' }, dsp_links: { spotify: 'https://open.spotify.com/artist/x' },
+  followers: { spotify: { count: 47862, asof: '2026-11-01', source: 'Chartmetric' }, tiktok: { count: 900, asof: '2026-11-01' } },
+  tour: [{ key: 'k1', date: '2027-01-10', city: 'London, UK', venue: 'Lafayette', announced: true }], about: 'keep me' } });
+await A('POST', '/api/projects', { artist: 'Old Artist', title: 'Old', release_date: '2024-01-01', data: {} });
+const list = await M('GET', '/projects');
+ok(Array.isArray(list) && list.some(x => x.id === mp.id) && !list.some(x => x.title === 'Old'), 'muse: lists current projects only');
+const one = list.find(x => x.id === mp.id);
+ok(one.social.instagram && one.dsp_links.spotify && one.followers.spotify.count === 47862 && one.tour.length === 1 && one.updated_at, 'muse: project rows carry links, counts and tour');
+const dry = await M('POST', `/projects/${mp.id}/stats?dry_run=1`, { asof: '2026-11-05', followers: { spotify: 47910 } });
+ok(dry.dry_run && dry.changes.followers.spotify.old === 47862 && dry.changes.followers.spotify.new === 47910, 'muse: dry run reports old → new');
+ok((await A('GET', '/api/projects/' + mp.id)).data.followers.spotify.count === 47862, 'muse: dry run writes nothing');
+const w1 = await M('POST', `/projects/${mp.id}/stats`, { asof: '2026-11-05', followers: { spotify: 47910, tiktok: null, spotify_listeners: 412000 },
+  tour: [{ date: '2027-01-10', city: 'London', venue: 'Lafayette' }, { date: '2027-01-12', city: 'Paris', venue: 'La Maroquinerie', ticket_url: 'https://t.example/1', announced: true }] });
+const after1 = await A('GET', '/api/projects/' + mp.id);
+const sp = after1.data.followers.spotify;
+ok(sp.count === 47910 && sp.asof === '2026-11-05' && sp.source === 'Muse' && sp.prev?.count === 47862 && sp.prev.asof === '2026-11-01', 'muse: count updated with source Muse and the previous reading kept');
+ok(after1.data.followers.tiktok.count === 900, 'muse: null leaves a count untouched');
+ok(after1.data.followers.spotify_listeners.count === 412000 && !after1.data.followers.spotify_listeners.prev, 'muse: a first reading has no previous');
+ok(after1.data.tour.length === 2 && after1.data.tour.filter(t => t.date === '2027-01-10').length === 1 && after1.data.tour.find(t => t.date === '2027-01-12').source === 'muse',
+  'muse: an existing show is not duplicated; a new show is added as source muse');
+ok(after1.data.about === 'keep me' && after1.data.social.instagram === 'https://instagram.com/m' && after1.updated_by === 'muse', 'muse: other fields untouched, saved as muse');
+ok(w1.changes.tour.added.length === 1 && w1.changes.tour.skipped.length === 1, 'muse: response summarises the changes');
+await M('POST', `/projects/${mp.id}/stats`, { asof: '2026-11-05', followers: { spotify: 47910 } });
+const sp2 = (await A('GET', '/api/projects/' + mp.id)).data.followers.spotify;
+ok(sp2.count === 47910 && sp2.prev?.count === 47862 && sp2.prev.asof === '2026-11-01', 'muse: sending the same numbers again keeps prev intact');
+const me1 = await M('POST', `/projects/${mp.id}/stats`, { asof: '2026-13-01', followers: {} });
+const me2 = await M('POST', `/projects/${mp.id}/stats`, { asof: '2026-11-05', followers: { myspace: 5 } });
+const me3 = await M('POST', `/projects/${mp.id}/stats`, { asof: '2026-11-05', followers: { spotify: 1.5 } });
+const me4 = await M('POST', `/projects/${mp.id}/stats`, { asof: '2026-11-05', tour: [{ date: 'soon', city: 'X' }] });
+ok(me1.error && me2.error && me3.error && me4.error, 'muse: bad dates, unknown platforms, non-integers and bad tour dates are refused');
+const dismissedId = after1.data.tour.find(t => t.date === '2027-01-12').ext_id;
+await A('PUT', '/api/projects/' + mp.id, { data: { ...after1.data, tour: after1.data.tour.filter(t => t.date !== '2027-01-12'), tour_dismissed: [dismissedId] } });
+await M('POST', `/projects/${mp.id}/stats`, { asof: '2026-11-12', tour: [{ date: '2027-01-12', city: 'Paris', venue: 'La Maroquinerie' }] });
+ok(!(await A('GET', '/api/projects/' + mp.id)).data.tour.some(t => t.date === '2027-01-12'), 'muse: a show removed by hand is not re-added');
+ok((await M('DELETE', `/projects/${mp.id}`)).error && (await M('GET', '/../settings')).error !== undefined, 'muse: no other routes');
+const dashM = (await A('GET', '/api/dashboard/listeners')).artists.find(x => x.artist === 'Muse Artist');
+ok(dashM && dashM.latest.value === 412000, 'muse: weekly listener readings feed the dashboard');
+ok((await A('GET', '/api/sync/log')).some(l => /^muse: Muse Artist/.test(l.msg)), 'muse: writes are logged');
 
 const log = await A('GET', '/api/sync/log');
 ok(!log.some(l => l.level === 'error'), 'no sync errors logged' + (log.filter(l => l.level === 'error').map(l => ' | ' + l.msg).join('')));

@@ -125,6 +125,7 @@ async function route(request, url, env, ctx) {
   if (parts[0] === 'auth' && parts[1] === 'dev' && m === 'POST') return loginDev(env);
   if (parts[0] === 'share' && parts[1] && m === 'GET') return shareView(parts[1], env);
   if (parts[0] !== 'api') throw new HttpError(404, 'Not found');
+  if (parts[1] === 'muse') return museRoute(request, url, env, parts.slice(2));
 
   const user = await requireUser(request, env);
   const canWrite = user.role === 'admin' || user.role === 'editor';
@@ -185,13 +186,13 @@ async function route(request, url, env, ctx) {
     return json(summary);
   }
 
-  if (res === 'dashboard' && id === 'listeners' && m === 'GET') return json(await dashboardListeners(env, url.searchParams.get('refresh') === '1'));
+  if (res === 'dashboard' && id === 'listeners' && m === 'GET') return json(await dashboardListeners(env));
   if (res === 'linkinfo' && m === 'GET') return json(await linkInfo(url.searchParams.get('url') || ''));
   if (res === 'followers' && m === 'POST') return json(await fetchFollowers(await body(request), env));
   if (res === 'chartmetric') {
     if (!env.CHARTMETRIC_REFRESH_TOKEN) throw new HttpError(400, 'Chartmetric isn’t connected (needs CHARTMETRIC_REFRESH_TOKEN)');
     if (id === 'search' && m === 'GET') return json(await cmSearch(url.searchParams.get('q') || '', env));
-    if (id === 'artist' && sub && m === 'GET') return json(await cmArtist(sub, env));
+    if (id === 'artist' && sub && m === 'GET') return json(await cmArtist(sub, env, { growth: false }));
   }
 
   if (res === 'lookup' && id === 'artist' && m === 'GET') {
@@ -1179,6 +1180,144 @@ async function fetchFollowers(b, env) {
   return { counts: out, errors };
 }
 
+// ── MUSE (agent) API ─────────────────────────────────────────
+// For Patrick's AI agent: read current projects, and send weekly follower counts and
+// tour dates, using a bearer token (MUSE_API_TOKEN secret) instead of Google sign-in.
+// It can do nothing else: no other fields, no deletes, no settings or users.
+//   GET  /api/muse/projects
+//   POST /api/muse/projects/:id/stats[?dry_run=1]
+// Every write is logged to sync_log as "muse: …".
+const MUSE_KEYS = ['instagram', 'tiktok', 'youtube', 'facebook', 'twitter', 'soundcloud', 'bandcamp', 'spotify', 'spotify_listeners', 'deezer'];
+const MUSE = { email: 'muse' };
+
+async function museRoute(request, url, env, parts) {
+  const h = request.headers.get('Authorization') || '';
+  const given = h.startsWith('Bearer ') ? h.slice(7) : '';
+  if (!env.MUSE_API_TOKEN || !given || !(await sameSecret(given, env.MUSE_API_TOKEN))) throw new HttpError(401, 'Bad or missing Muse token');
+  const [res, id, sub] = parts;
+  const m = request.method;
+  if (res === 'projects' && !id && m === 'GET') return json(await museProjects(env));
+  if (res === 'projects' && id && sub === 'stats' && m === 'POST') {
+    let b; try { b = await request.json(); } catch { throw new HttpError(400, 'Body must be JSON'); }
+    return json(await museStats(id, b, env, url.searchParams.get('dry_run') === '1'));
+  }
+  throw new HttpError(404, 'Not found');
+}
+
+// Constant-time comparison (via HMAC digests, so lengths don't leak either).
+async function sameSecret(a, b) {
+  const key = await crypto.subtle.importKey('raw', crypto.getRandomValues(new Uint8Array(32)), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const [x, y] = await Promise.all([a, b].map(v => crypto.subtle.sign('HMAC', key, new TextEncoder().encode(v))));
+  const p = new Uint8Array(x), q = new Uint8Array(y);
+  let diff = 0; for (let i = 0; i < p.length; i++) diff |= p[i] ^ q[i];
+  return diff === 0;
+}
+
+// Current = not released yet, or released within the last 12 months (as on the Projects page).
+async function museProjects(env) {
+  const today = new Date().toISOString().slice(0, 10);
+  const rows = (await env.DB.prepare('SELECT * FROM projects WHERE release_date IS NULL OR release_date >= ? ORDER BY release_date IS NULL, release_date, artist')
+    .bind(addDays(today, -365)).all()).results.map(r => decode(TABLES.projects, r));
+  return rows.map(p => {
+    const d = p.data || {};
+    return { id: p.id, artist: p.artist, title: p.title, release_date: p.release_date, status: p.status, catalog: p.catalog,
+      social: d.social || {}, dsp_links: d.dsp_links || {}, followers: d.followers || {}, tour: d.tour || [],
+      chartmetric_id: d.chartmetric_id || null, updated_at: p.updated_at, updated_by: p.updated_by };
+  });
+}
+
+const isYmd = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v)) && !isNaN(Date.parse(v + 'T00:00:00Z')) && new Date(v + 'T00:00:00Z').toISOString().slice(0, 10) === v;
+
+async function museStats(projectId, b, env, dryRun) {
+  if (!b || typeof b !== 'object') throw new HttpError(400, 'Body must be a JSON object');
+  if (!isYmd(b.asof)) throw new HttpError(400, 'asof must be a date like 2026-11-05');
+  const followers = b.followers ?? {};
+  if (typeof followers !== 'object' || Array.isArray(followers)) throw new HttpError(400, 'followers must be an object');
+  const tourIn = b.tour ?? [];
+  if (!Array.isArray(tourIn)) throw new HttpError(400, 'tour must be a list');
+  for (const [i, t] of tourIn.entries()) {
+    if (!t || typeof t !== 'object') throw new HttpError(400, `tour[${i}] must be an object`);
+    if (!isYmd(t.date)) throw new HttpError(400, `tour[${i}].date must be a date like 2026-11-20`);
+    if (!String(t.city || '').trim() && !String(t.venue || '').trim()) throw new HttpError(400, `tour[${i}] needs a city or venue`);
+    for (const k of ['city', 'venue', 'notes', 'ticket_url']) if (t[k] != null && typeof t[k] !== 'string') throw new HttpError(400, `tour[${i}].${k} must be text`);
+    if (t.ticket_url && !/^https?:\/\//i.test(t.ticket_url)) throw new HttpError(400, `tour[${i}].ticket_url must be an http(s) link`);
+  }
+
+  // Read → change → write only if nobody saved in between (otherwise re-read and redo).
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const p = await getRow(TABLES.projects, projectId, env);
+    if (!p) throw new HttpError(404, 'Project not found');
+    const d = p.data || {};
+    const allowed = new Set([...MUSE_KEYS, ...Object.keys(d.followers || {})]);
+    for (const [k, v] of Object.entries(followers)) {
+      if (!allowed.has(k)) throw new HttpError(400, `Unknown platform "${k}". Use one of: ${[...allowed].join(', ')}`);
+      if (v !== null && !(Number.isInteger(v) && v >= 0)) throw new HttpError(400, `followers.${k} must be a whole number ≥ 0, or null`);
+    }
+
+    // Followers: same prev rule as the Chartmetric refresh.
+    const changes = { followers: {}, tour: { added: [], updated: [], skipped: [] } };
+    const fol = { ...(d.followers || {}) };
+    for (const [k, v] of Object.entries(followers)) {
+      if (v === null) continue;                                   // not checked this week
+      const old = fol[k];
+      const prev = old && old.asof && old.asof !== b.asof && old.count != null && old.count !== '' ? { count: Number(old.count), asof: old.asof } : old?.prev;
+      fol[k] = { count: v, asof: b.asof, source: 'Muse', ...(prev ? { prev } : {}) };
+      changes.followers[k] = { old: old?.count ?? null, new: v, old_asof: old?.asof ?? null };
+    }
+
+    // Tour: match on the same date plus the same city or venue; never delete, never re-add dismissed.
+    const rows = (d.tour || []).map(r => ({ ...r }));
+    const dismissed = new Set(d.tour_dismissed || []);
+    for (const t of tourIn) {
+      const inc = { date: t.date, city: String(t.city || '').trim(), venue: String(t.venue || '').trim(), notes: String(t.notes || '').trim(), ticket_url: String(t.ticket_url || '').trim() };
+      const extId = `muse:${inc.date}:${cityKey(inc.city) || venueKey(inc.venue)}`;
+      const hit = rows.find(r => r.ext_id === extId) || rows.find(r => r.date === inc.date &&
+        ((inc.city && cityKey(r.city) === cityKey(inc.city)) || (inc.venue && r.venue && venueKey(r.venue) === venueKey(inc.venue))));
+      if (hit) {
+        const before = JSON.stringify(hit);
+        for (const k of ['venue', 'ticket_url', 'notes']) if (inc[k] && inc[k] !== hit[k]) hit[k] = inc[k];
+        if (t.announced === true) hit.announced = true;
+        if (JSON.stringify(hit) !== before) changes.tour.updated.push({ date: inc.date, city: hit.city, venue: hit.venue });
+        else changes.tour.skipped.push({ date: inc.date, city: hit.city, reason: 'already listed' });
+      } else if (dismissed.has(extId)) {
+        changes.tour.skipped.push({ date: inc.date, city: inc.city, reason: 'removed by hand earlier' });
+      } else {
+        rows.push({ key: crypto.randomUUID().slice(0, 8), ...inc, source: 'muse', announced: t.announced === true, ext_id: extId });
+        changes.tour.added.push({ date: inc.date, city: inc.city, venue: inc.venue });
+      }
+    }
+    rows.sort((x, y) => String(x.date || '9').localeCompare(String(y.date || '9')));
+
+    if (dryRun) return { dry_run: true, id: p.id, changes };
+
+    const nd = { ...d, followers: fol, tour: rows };
+    const stamp = now();
+    if (Object.keys(followers).length) nd.followers_synced_at = stamp;
+    if (tourIn.length) nd.tour_synced_at = stamp;
+    // updated_at moves forward, so anyone with the project open gets Muse's numbers merged
+    // into their next save (the app combines non-overlapping changes) instead of overwriting them.
+    const r = await env.DB.prepare('UPDATE projects SET data = ?, updated_at = ?, updated_by = ? WHERE id = ? AND updated_at = ?')
+      .bind(JSON.stringify(nd), stamp, MUSE.email, p.id, p.updated_at).run();
+    if (!(r.meta?.changes ?? r.changes)) continue;                // someone saved in between: try again
+
+    // Weekly history per artist for the Dashboard (kept server-side, ~2 years).
+    const ak = p.artist.trim().toLowerCase();
+    for (const [k, v] of Object.entries(followers)) {
+      if (v === null) continue;
+      const key = `stat_history:${ak}:${k}`;
+      const cur = await env.DB.prepare('SELECT value FROM sync_state WHERE key = ?').bind(key).first();
+      let hist = []; try { hist = cur ? JSON.parse(cur.value) : []; } catch { hist = []; }
+      hist = hist.filter(([dd]) => dd !== b.asof).concat([[b.asof, v]]).sort((x, y) => x[0].localeCompare(y[0])).slice(-110);
+      await env.DB.prepare('INSERT INTO sync_state (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2').bind(key, JSON.stringify(hist)).run();
+    }
+    await learnFromProject(p.id, MUSE, env);
+    const fl = Object.entries(changes.followers).map(([k, c]) => `${k} ${c.old ?? '—'}→${c.new}`).join(', ');
+    await logSync(env, 'info', `muse: ${p.artist} — ${p.title} (${p.id}) asof ${b.asof}: ${fl || 'no counts'}; tour +${changes.tour.added.length} ~${changes.tour.updated.length}`);
+    return { dry_run: false, project: { id: p.id, followers: fol, tour: rows, updated_at: stamp, updated_by: MUSE.email }, changes };
+  }
+  throw new HttpError(409, 'The project kept changing while saving. Try again in a minute.');
+}
+
 // ── CHARTMETRIC ──────────────────────────────────────────────
 // Auth: the account's refresh token (CHARTMETRIC_REFRESH_TOKEN secret) is
 // exchanged at /api/token for a 1-hour access token, cached per isolate.
@@ -1227,7 +1366,7 @@ const CM_SERIES = { instagram: ['instagram', 'followers'], tiktok: ['tiktok', 'f
   facebook: ['facebook', 'likes'], twitter: ['twitter', 'followers'], soundcloud: ['soundcloud', 'followers'],
   spotify: ['spotify', 'followers'], spotify_listeners: ['spotify', 'listeners'], deezer: ['deezer', 'fans'] };
 
-async function cmArtist(cmId, env, { followersOnly = false } = {}) {
+async function cmArtist(cmId, env, { followersOnly = false, growth = true } = {}) {
   if (!/^\d+$/.test(String(cmId))) throw new HttpError(400, 'Bad Chartmetric id');
   const meta = (await cmGet(`/artist/${cmId}`, env)).obj || {};
   const urls = followersOnly ? [] : (await cmGet(`/artist/${cmId}/urls`, env)).obj;
@@ -1261,7 +1400,7 @@ async function cmArtist(cmId, env, { followersOnly = false } = {}) {
   // Growth: the latest time-series point carries 7- and 30-day diffs. Only asked
   // for platforms the artist actually has, to keep the call count down.
   for (const [key, [src, field]] of Object.entries(CM_SERIES)) {
-    if (!out.followers[key]) continue;
+    if (!growth || !out.followers[key]) continue;
     try {
       const pts = (await cmGet(`/artist/${cmId}/stat/${src}?field=${field}&latest=true`, env)).obj?.[field] || [];
       const pt = pts[pts.length - 1];
@@ -1456,40 +1595,39 @@ function decodeEntities(s) {
 // ── DASHBOARD: Spotify monthly listeners for current projects ─
 // Current = no release date yet, or released within the last 12 months. One series
 // per artist (six months of daily points from Chartmetric), cached 12 hours.
-async function dashboardListeners(env, refresh) {
-  if (!env.CHARTMETRIC_REFRESH_TOKEN) return { configured: false, artists: [] };
+// Built only from numbers already stored, never a Chartmetric call: the Spotify
+// monthly-listener history cached from Chartmetric earlier (cm_listeners:<id>), the
+// weekly readings Muse sends (stat_history:<artist>:spotify_listeners), and each
+// project's current / previous reading.
+async function dashboardListeners(env) {
   const today = new Date().toISOString().slice(0, 10);
   const rows = (await env.DB.prepare('SELECT id, artist, title, release_date, status, data FROM projects WHERE release_date IS NULL OR release_date >= ? ORDER BY release_date IS NULL, release_date')
     .bind(addDays(today, -365)).all()).results;
   const byArtist = new Map();
   for (const r of rows) {
     const k = r.artist.trim().toLowerCase();
-    if (!byArtist.has(k)) byArtist.set(k, { artist: r.artist, projects: [], project: null });
+    if (!byArtist.has(k)) byArtist.set(k, { artist: r.artist, projects: [], datas: [] });
     const a = byArtist.get(k);
     let data = {}; try { data = JSON.parse(r.data || '{}'); } catch { /* bad row */ }
     a.projects.push({ id: r.id, title: r.title, release_date: r.release_date, status: r.status });
-    if (!a.project) a.project = { ...r, data };
+    a.datas.push(data);
   }
-  const since = addDays(today, -182);
+  const state = async key => { const r = await env.DB.prepare('SELECT value FROM sync_state WHERE key = ?').bind(key).first(); try { return r ? JSON.parse(r.value) : null; } catch { return null; } };
   const out = [];
-  for (const a of byArtist.values()) {
-    const item = { artist: a.artist, projects: a.projects, cm_id: null, points: [], latest: null, error: null };
-    try {
-      const cmId = await projectCmId(a.project, env);
-      item.cm_id = cmId ? String(cmId) : null;
-      if (!cmId) { item.error = 'Not linked to Chartmetric yet'; out.push(item); continue; }
-      const key = `cm_listeners:${cmId}`;
-      const cached = await env.DB.prepare('SELECT value FROM sync_state WHERE key = ?').bind(key).first();
-      let c = null; try { c = cached ? JSON.parse(cached.value) : null; } catch { c = null; }
-      if (!refresh && c && Date.now() - c.at < 12 * 3600e3) { Object.assign(item, c.data); out.push(item); continue; }
-      const pts = (await cmGet(`/artist/${cmId}/stat/spotify?field=listeners&since=${since}`, env)).obj?.listeners || [];
-      const series = pts.map(p => [String(p.timestp || '').slice(0, 10), Number(p.value)]).filter(([d, v]) => d && Number.isFinite(v)).sort((x, y) => x[0].localeCompare(y[0]));
-      const last = pts.length ? pts.reduce((x, y) => String(y.timestp) > String(x.timestp) ? y : x) : null;
-      const data = { points: series, latest: last ? { value: Number(last.value), date: String(last.timestp).slice(0, 10), week: last.weekly_diff ?? null, month: last.monthly_diff ?? null, month_pct: last.monthly_diff_percent ?? null } : null };
-      await env.DB.prepare('INSERT INTO sync_state (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2').bind(key, JSON.stringify({ at: Date.now(), data })).run();
-      Object.assign(item, data);
-    } catch (e) { item.error = e.message; }
-    out.push(item);
+  for (const [k, a] of byArtist) {
+    const pts = new Map();                                   // date → value, newest source wins
+    const cmIds = new Set(a.datas.map(d => d.chartmetric_id).filter(Boolean));
+    for (const id of cmIds) for (const [d, v] of (await state(`cm_listeners:${id}`))?.data?.points || []) pts.set(d, v);
+    for (const d of a.datas) {
+      const f = d.followers?.spotify_listeners;
+      if (f?.prev?.asof && f.prev.count != null) pts.set(f.prev.asof, Number(f.prev.count));
+      if (f?.asof && f.count != null && f.count !== '') pts.set(f.asof, Number(f.count));
+    }
+    for (const [d, v] of (await state(`stat_history:${k}:spotify_listeners`)) || []) pts.set(d, v);
+    const points = [...pts].filter(([d, v]) => /^\d{4}-\d{2}-\d{2}$/.test(d) && Number.isFinite(v)).sort((x, y) => x[0].localeCompare(y[0]));
+    const last = points[points.length - 1];
+    out.push({ artist: a.artist, projects: a.projects, points, latest: last ? { value: last[1], date: last[0] } : null,
+      error: last ? null : 'No monthly-listener numbers yet' });
   }
   return { configured: true, artists: out };
 }
