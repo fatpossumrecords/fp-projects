@@ -86,7 +86,8 @@ export default {
 
   async scheduled(event, env, ctx) {
     ctx.waitUntil(runCalendarSync(env));
-    ctx.waitUntil(scheduledChartmetric(env));
+    // Scheduled Chartmetric pulls are paused (they used up the API credits); manual lookups still work.
+    if (env.CHARTMETRIC_SCHEDULED === 'true') ctx.waitUntil(scheduledChartmetric(env));
   },
 };
 
