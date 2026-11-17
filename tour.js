@@ -51,7 +51,34 @@
       if (ui.artist && !artists.includes(ui.artist)) ui.artist = '';
       $('#t-artist').innerHTML = `<option value="">All artists</option>` + artists.map(a => `<option${a === ui.artist ? ' selected' : ''}>${esc(a)}</option>`).join('');
       draw();
+      locate();
     };
+
+    // Cities not on the map yet are looked up here, one a second (OpenStreetMap's limit),
+    // and saved for everyone. OpenStreetMap refuses these lookups from the Worker's servers.
+    let locating = false;
+    async function locate() {
+      if (locating || !data.pending?.length) return;
+      locating = true;
+      const batch = [];
+      const flush = async () => { if (batch.length) await FP.post('/api/tour/places', { places: batch.splice(0) }).catch(() => {}); };
+      try {
+        for (const key of [...data.pending]) {
+          if (!main.isConnected) break;                      // left the page
+          const r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(key)}`, { headers: { 'Accept-Language': 'en' } });
+          if (!r.ok) break;                                  // busy: try again next visit
+          const hit = (await r.json())[0];
+          batch.push(hit ? { key, lat: Number(hit.lat), lon: Number(hit.lon), label: hit.display_name } : { key, lat: null, lon: null });
+          if (hit) data.places[key] = { lat: Number(hit.lat), lon: Number(hit.lon), label: hit.display_name };
+          data.pending = data.pending.filter(k => k !== key);
+          if (batch.length >= 5) { await flush(); if (ui.region) draw(); }
+          await new Promise(res => setTimeout(res, 1100));
+        }
+      } catch { /* offline: try again next visit */ }
+      await flush();
+      locating = false;
+      if (main.isConnected) draw();
+    }
 
     const draw = () => {
       main.querySelectorAll('#t-region button').forEach(b => b.classList.toggle('on', b.dataset.v === ui.region));
@@ -76,7 +103,7 @@
       $('#t-count').textContent = `${list.length} show${list.length === 1 ? '' : 's'}`;
       const notes = [];
       if (region) notes.push(`Within ${region.mi} miles of ${esc(region.label)}.`);
-      if (region && (unplaced || data.pending)) notes.push(`${unplaced} show${unplaced === 1 ? '' : 's'} not on the map yet${data.pending ? ' (cities are being located; check back in a few minutes)' : ' (city not recognised)'}.`);
+      if (region && unplaced) notes.push(`${unplaced} show${unplaced === 1 ? '' : 's'} not on the map yet${data.pending?.length ? ` (locating cities: ${data.pending.length} to go, about ${Math.ceil(data.pending.length * 1.2 / 60)} min with this page open)` : ' (city not recognised)'}.`);
       let html = '', month = '';
       for (const s of list) {
         const m = s.date.slice(0, 7);

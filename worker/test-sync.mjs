@@ -298,10 +298,12 @@ await A('POST', '/api/tour', { artist: 'Solo Act', shows: [{ date: '2027-06-01',
 tl = await A('GET', '/api/tour');
 const solo = tl.shows.filter(s => s.artist === 'Solo Act');
 ok(solo.length === 2 && solo.every(s => s.refs[0].s && !s.projects.length), 'tour: shows for an artist without a project are kept on their own');
-ok(tl.pending >= 3, 'tour: cities without coordinates are reported as pending');
-await worker.scheduled({}, env, ctx); while (waits.length) await waits.shift();
+ok(['oxford, ms', 'london, uk', 'memphis, tn'].every(k => tl.pending.includes(k)), 'tour: cities without coordinates are listed as pending');
+await A('POST', '/api/tour/places', { places: [{ key: 'Oxford, MS', lat: 34.366, lon: -89.519, label: 'Oxford' }, { key: 'london, uk', lat: 51.507, lon: -0.128 },
+  { key: 'memphis, tn', lat: 35.149, lon: -90.049 }, { key: 'nowhere town', lat: null, lon: null }, { key: 'bad', lat: 500, lon: 0 }] });
 tl = await A('GET', '/api/tour');
-ok(tl.places['oxford, ms']?.lat === 34.366 && tl.places['london, uk'] && tl.places['memphis, tn'], 'tour: the cron looks up city coordinates and caches them');
+ok(tl.places['oxford, ms']?.lat === 34.366 && tl.places['london, uk'] && tl.places['memphis, tn'] && !tl.places.bad, 'tour: coordinates looked up in the browser are saved for everyone');
+ok(!tl.pending.includes('oxford, ms') && !tl.places['nowhere town'], 'tour: looked-up cities are no longer pending; unrecognised ones are remembered');
 memphis = tl.shows.find(s => s.artist === 'Tour Band' && s.date === '2027-05-01');
 await A('POST', '/api/tour/edit', { refs: memphis.refs, fields: { venue: 'Minglewood Hall', announced: true } });
 const pa2 = await A('GET', '/api/projects/' + tpA.id), pb2 = await A('GET', '/api/projects/' + tpB.id);

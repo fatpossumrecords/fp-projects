@@ -88,7 +88,6 @@ export default {
     ctx.waitUntil(runCalendarSync(env));
     // Scheduled Chartmetric pulls are paused (they used up the API credits); manual lookups still work.
     if (env.CHARTMETRIC_SCHEDULED === 'true') ctx.waitUntil(scheduledChartmetric(env));
-    ctx.waitUntil(geocodeMissing(env, 25));
   },
 };
 
@@ -231,6 +230,7 @@ async function route(request, url, env, ctx) {
     if (!id && m === 'POST') { write(); return json(await tourAdd(await body(request), user, env)); }
     if (id === 'edit' && m === 'POST') { write(); const b = await body(request); return json(await tourEdit(b.refs, b.fields, user, env)); }
     if (id === 'delete' && m === 'POST') { write(); return json(await tourDelete((await body(request)).refs, user, env)); }
+    if (id === 'places' && m === 'POST') return json(await savePlaces((await body(request)).places, env));
   }
 
   if (res === 'projects' && id && sub === 'milestones' && sub2 === 'generate' && m === 'POST') {
@@ -1259,8 +1259,26 @@ async function tourList(env) {
   const places = {};
   for (const r of (await env.DB.prepare('SELECT key, lat, lon, label FROM places WHERE found = 1').all()).results) places[r.key] = { lat: r.lat, lon: r.lon, label: r.label };
   const looked = new Set((await env.DB.prepare('SELECT key FROM places').all()).results.map(r => r.key));
-  const pending = new Set(groups.map(g => placeKey(g.city)).filter(k => k && !looked.has(k))).size;
+  const pending = [...new Set(groups.map(g => placeKey(g.city)).filter(k => k && !looked.has(k)))];
   return { shows: groups, places, pending };
+}
+
+// City coordinates looked up by the Tour Dates page in the browser (OpenStreetMap
+// refuses lookups from Cloudflare's shared servers), saved for everyone.
+async function savePlaces(list, env) {
+  if (!Array.isArray(list)) throw new HttpError(400, 'places must be a list');
+  let saved = 0;
+  for (const p of list.slice(0, 50)) {
+    const key = placeKey(p?.key);
+    if (!key || key.length > 200) continue;
+    const found = p.lat != null && p.lon != null;
+    const lat = Number(p.lat), lon = Number(p.lon);
+    if (found && !(Math.abs(lat) <= 90 && Math.abs(lon) <= 180)) continue;
+    await env.DB.prepare('INSERT OR REPLACE INTO places (key, lat, lon, label, found, at) VALUES (?, ?, ?, ?, ?, ?)')
+      .bind(key, found ? lat : null, found ? lon : null, found ? String(p.label || '').slice(0, 200) : null, found ? 1 : 0, now()).run();
+    saved++;
+  }
+  return { saved };
 }
 
 async function tourAdd(b, user, env) {
@@ -1361,27 +1379,6 @@ async function adoptShows(projectId, user, env) {
   });
   await env.DB.prepare('DELETE FROM shows WHERE artist = ? COLLATE NOCASE').bind(p.artist).run();
   await logSync(env, 'info', `tour: ${shows.length} show(s) for ${p.artist} moved into the new project`);
-}
-
-// City → coordinates via OpenStreetMap's Nominatim (free; at most one lookup a second,
-// results cached for good). Runs from the 5-minute cron, a batch at a time.
-async function geocodeMissing(env, limit) {
-  try {
-    const cities = new Set();
-    for (const r of (await env.DB.prepare("SELECT DISTINCT json_extract(t.value, '$.city') c FROM projects, json_each(projects.data, '$.tour') t").all()).results) if (r.c) cities.add(placeKey(r.c));
-    for (const r of (await env.DB.prepare('SELECT DISTINCT city c FROM shows').all()).results) if (r.c) cities.add(placeKey(r.c));
-    const looked = new Set((await env.DB.prepare('SELECT key FROM places').all()).results.map(r => r.key));
-    const todo = [...cities].filter(k => k && !looked.has(k)).slice(0, limit);
-    for (const [i, key] of todo.entries()) {
-      if (i) await new Promise(r => setTimeout(r, 1100));
-      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(key)}`,
-        { headers: { 'User-Agent': 'fp-projects-tour-dates/1.0 (+https://fatpossumrecords.github.io/fp-projects/)', 'Accept-Language': 'en' } });
-      if (!r.ok) { await logSync(env, 'warn', `geocode "${key}": HTTP ${r.status}`); break; }
-      const hit = (await r.json())[0];
-      await env.DB.prepare('INSERT OR REPLACE INTO places (key, lat, lon, label, found, at) VALUES (?, ?, ?, ?, ?, ?)')
-        .bind(key, hit ? Number(hit.lat) : null, hit ? Number(hit.lon) : null, hit?.display_name?.slice(0, 200) || null, hit ? 1 : 0, now()).run();
-    }
-  } catch (e) { await logSync(env, 'warn', `geocode: ${e.message}`); }
 }
 
 // ── MUSE (agent) API ─────────────────────────────────────────
