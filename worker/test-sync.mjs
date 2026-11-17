@@ -28,6 +28,11 @@ const realFetch = globalThis.fetch;
 globalThis.fetch = async (url, opts = {}) => {
   const u = new URL(url);
   if (u.host === 'oauth2.googleapis.com') return new Response(JSON.stringify({ access_token: 't', expires_in: 3600 }));
+  if (u.host === 'nominatim.openstreetmap.org') {
+    const q = u.searchParams.get('q');
+    const at = { 'oxford, ms': [34.366, -89.519], 'memphis, tn': [35.149, -90.049], 'london, uk': [51.507, -0.128], 'brooklyn, ny': [40.678, -73.944] }[q];
+    return new Response(JSON.stringify(at ? [{ lat: String(at[0]), lon: String(at[1]), display_name: q + ' (osm)' }] : []));
+  }
   if (u.host === 'api.chartmetric.com') {
     // Shapes copied from the Chartmetric API reference examples.
     const J = d => new Response(JSON.stringify(d));
@@ -276,6 +281,42 @@ ok(tp4b.data.tour?.length === 3 && tp4b.data.tour_synced_at, 'scheduled run also
 ok(tp4b.updated_at === tp4.updated_at, 'background refresh does not bump updated_at (no save conflicts for editors)');
 await worker.scheduled({}, env, ctx); while (waits.length) await waits.shift();
 ok((await A('GET', '/api/projects/' + tp4.id)).data.followers_synced_at === tp4b.data.followers_synced_at, 'a second run the same week skips projects already refreshed');
+
+// 17. Tour Dates page: one list across projects and artists without a project
+const tpA = await A('POST', '/api/projects', { artist: 'Tour Band', title: 'LP1', release_date: '2027-04-01', data: { tour: [{ key: 'a1', date: '2027-05-01', city: 'Memphis, TN', venue: 'Hi Tone', announced: true }] } });
+const tpB = await A('POST', '/api/projects', { artist: 'Tour Band', title: 'LP1 Deluxe', release_date: '2027-04-01', data: { tour: [{ key: 'b1', date: '2027-05-01', city: 'Memphis', venue: 'Hi Tone' }] } });
+let tl = await A('GET', '/api/tour');
+let memphis = tl.shows.filter(s => s.artist === 'Tour Band' && s.date === '2027-05-01');
+ok(memphis.length === 1 && memphis[0].refs.length === 2 && memphis[0].projects.length === 2, 'tour: the same show on two projects of one artist is listed once');
+await A('POST', '/api/tour', { artist: 'tour band', date: '2027-05-03', city: 'Brooklyn, NY', venue: 'Union Pool' });
+const pa = await A('GET', '/api/projects/' + tpA.id), pb = await A('GET', '/api/projects/' + tpB.id);
+ok(pa.data.tour.some(t => t.city === 'Brooklyn, NY') && pb.data.tour.some(t => t.city === 'Brooklyn, NY'), 'tour: a show added for an artist with projects goes into their current projects');
+ok(pa.updated_at !== tpA.updated_at, 'tour: the project is marked changed, so open editors merge it');
+const dupAdd = await A('POST', '/api/tour', { artist: 'Tour Band', date: '2027-05-03', city: 'Brooklyn', venue: 'Union Pool' });
+ok(dupAdd.added === 0 && dupAdd.skipped === 1, 'tour: adding a show that is already listed is skipped');
+await A('POST', '/api/tour', { artist: 'Solo Act', shows: [{ date: '2027-06-01', city: 'Oxford, MS', venue: 'Proud Larry\'s' }, { date: '2027-06-05', city: 'London, UK', venue: 'Lafayette' }] });
+tl = await A('GET', '/api/tour');
+const solo = tl.shows.filter(s => s.artist === 'Solo Act');
+ok(solo.length === 2 && solo.every(s => s.refs[0].s && !s.projects.length), 'tour: shows for an artist without a project are kept on their own');
+ok(tl.pending >= 3, 'tour: cities without coordinates are reported as pending');
+await worker.scheduled({}, env, ctx); while (waits.length) await waits.shift();
+tl = await A('GET', '/api/tour');
+ok(tl.places['oxford, ms']?.lat === 34.366 && tl.places['london, uk'] && tl.places['memphis, tn'], 'tour: the cron looks up city coordinates and caches them');
+memphis = tl.shows.find(s => s.artist === 'Tour Band' && s.date === '2027-05-01');
+await A('POST', '/api/tour/edit', { refs: memphis.refs, fields: { venue: 'Minglewood Hall', announced: true } });
+const pa2 = await A('GET', '/api/projects/' + tpA.id), pb2 = await A('GET', '/api/projects/' + tpB.id);
+ok(pa2.data.tour.find(t => t.key === 'a1').venue === 'Minglewood Hall' && pb2.data.tour.find(t => t.key === 'b1').venue === 'Minglewood Hall', 'tour: editing a show updates every project that lists it');
+const soloLondon = tl.shows.find(s => s.artist === 'Solo Act' && s.city === 'London, UK');
+await A('POST', '/api/tour/edit', { refs: soloLondon.refs, fields: { notes: 'support slot' } });
+await A('POST', '/api/tour/delete', { refs: memphis.refs });
+tl = await A('GET', '/api/tour');
+ok(!tl.shows.some(s => s.artist === 'Tour Band' && s.date === '2027-05-01') && tl.shows.find(s => s.artist === 'Solo Act' && s.city === 'London, UK').notes === 'support slot', 'tour: deleting removes it from every project; stand-alone shows can be edited');
+const badShow = await A('POST', '/api/tour', { artist: 'X', date: 'tomorrow', city: 'Y' });
+ok(badShow.error, 'tour: bad dates are refused');
+const soloProj = await A('POST', '/api/projects', { artist: 'Solo Act', title: 'Debut', release_date: '2027-09-01', data: {} });
+const sp3 = await A('GET', '/api/projects/' + soloProj.id);
+tl = await A('GET', '/api/tour');
+ok(sp3.data.tour?.length === 2 && tl.shows.filter(s => s.artist === 'Solo Act').every(s => s.refs.every(r => r.p)), 'tour: creating a project for the artist moves their shows into it');
 
 // 16. Muse agent API (bearer token, followers + tour only)
 env.MUSE_API_TOKEN = 'muse-secret-token';

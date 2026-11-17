@@ -88,6 +88,7 @@ export default {
     ctx.waitUntil(runCalendarSync(env));
     // Scheduled Chartmetric pulls are paused (they used up the API credits); manual lookups still work.
     if (env.CHARTMETRIC_SCHEDULED === 'true') ctx.waitUntil(scheduledChartmetric(env));
+    ctx.waitUntil(geocodeMissing(env, 25));
   },
 };
 
@@ -222,6 +223,14 @@ async function route(request, url, env, ctx) {
     if (!env.CHARTMETRIC_REFRESH_TOKEN) throw new HttpError(400, 'Chartmetric isn’t connected (needs CHARTMETRIC_REFRESH_TOKEN)');
     const r = await pullProjectTour(id, { email: user.email }, env, true);
     return json({ ...r, project: await getRow(TABLES.projects, id, env) });
+  }
+
+  // All tour dates (Tour Dates page): project tours + shows for artists without a project.
+  if (res === 'tour') {
+    if (!id && m === 'GET') return json(await tourList(env));
+    if (!id && m === 'POST') { write(); return json(await tourAdd(await body(request), user, env)); }
+    if (id === 'edit' && m === 'POST') { write(); const b = await body(request); return json(await tourEdit(b.refs, b.fields, user, env)); }
+    if (id === 'delete' && m === 'POST') { write(); return json(await tourDelete((await body(request)).refs, user, env)); }
   }
 
   if (res === 'projects' && id && sub === 'milestones' && sub2 === 'generate' && m === 'POST') {
@@ -477,6 +486,7 @@ async function afterWrite(res, id, user, env, ctx) {
   if (res === 'projects') {
     await syncProjectReleases(id, user, env, ctx);
     await learnFromProject(id, user, env);
+    await adoptShows(id, user, env);
   }
 }
 
@@ -1181,6 +1191,197 @@ async function fetchFollowers(b, env) {
     } catch (e) { errors.spotify = e.message; }
   }
   return { counts: out, errors };
+}
+
+// ── TOUR DATES (all artists) ─────────────────────────────────
+// One list of every show. Artists with a project keep their shows in the project
+// (data.tour), so a show added here for such an artist goes into its current
+// project(s) and appears there too. Artists without a project use the shows table;
+// those shows move into the first project created for the artist.
+// Refs say where each copy of a show lives: { p: projectId, k: rowKey } or { s: showId }.
+const SHOW_FIELDS = ['date', 'city', 'venue', 'notes', 'ticket_url', 'announced', 'cancelled'];
+const placeKey = c => String(c || '').trim().toLowerCase().replace(/\s+/g, ' ');
+const sameShowRow = (x, y) => x.date && x.date === y.date && ((x.city && cityKey(x.city) === cityKey(y.city)) || (x.venue && y.venue && venueKey(x.venue) === venueKey(y.venue)));
+
+function cleanShow(f, { partial = false } = {}) {
+  const out = {};
+  for (const k of SHOW_FIELDS) {
+    if (!(k in (f || {}))) continue;
+    if (k === 'announced' || k === 'cancelled') out[k] = !!f[k];
+    else out[k] = String(f[k] ?? '').trim().slice(0, 500);
+  }
+  if ('date' in out && !isYmd(out.date)) throw new HttpError(400, 'Date must be a date like 2027-03-14');
+  if (!partial && !out.date) throw new HttpError(400, 'Date is required');
+  if (!partial && !out.city && !out.venue) throw new HttpError(400, 'Add a city or venue');
+  if (out.ticket_url && !/^https?:\/\//i.test(out.ticket_url)) throw new HttpError(400, 'Ticket link must start with http');
+  return out;
+}
+
+// Current projects (unreleased, or released in the last 12 months) for an artist; else their latest project.
+async function artistProjects(env, artist) {
+  const rows = (await env.DB.prepare('SELECT id, release_date FROM projects WHERE artist = ? COLLATE NOCASE ORDER BY release_date IS NULL DESC, release_date DESC').bind(artist).all()).results;
+  const cut = addDays(new Date().toISOString().slice(0, 10), -365);
+  const current = rows.filter(r => !r.release_date || r.release_date >= cut);
+  return current.length ? current.map(r => r.id) : rows.slice(0, 1).map(r => r.id);
+}
+
+// Read → change → write a project's data, only if nobody saved in between. updated_at moves
+// forward so anyone with the project open gets this merged into their next save.
+async function mutateProjectData(env, id, user, fn) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const p = await getRow(TABLES.projects, id, env);
+    if (!p) return null;
+    const d = p.data || {};
+    if (fn(d, p) === false) return p;
+    const r = await env.DB.prepare('UPDATE projects SET data = ?, updated_at = ?, updated_by = ? WHERE id = ? AND updated_at = ?')
+      .bind(JSON.stringify(d), now(), user.email, id, p.updated_at).run();
+    if (r.meta?.changes ?? r.changes) return p;
+  }
+  throw new HttpError(409, 'The project kept changing while saving. Try again in a minute.');
+}
+
+async function tourList(env) {
+  const projects = (await env.DB.prepare('SELECT id, artist, title, release_date, status, data FROM projects').all()).results;
+  const groups = [];                                        // one entry per show per artist
+  const add = (artist, row, ref, proj) => {
+    const g = groups.find(x => x.artist.toLowerCase() === artist.toLowerCase() && sameShowRow(x, row));
+    if (g) { g.refs.push(ref); if (proj && !g.projects.some(p => p.id === proj.id)) g.projects.push(proj); return; }
+    groups.push({ artist, date: row.date, city: row.city || '', venue: row.venue || '', notes: row.notes || '', ticket_url: row.ticket_url || '',
+      announced: !!row.announced, cancelled: !!row.cancelled, source: row.source || '', refs: [ref], projects: proj ? [proj] : [] });
+  };
+  for (const p of projects) {
+    let d = {}; try { d = JSON.parse(p.data || '{}'); } catch { continue; }
+    const proj = { id: p.id, title: p.title, status: p.status };
+    for (const t of d.tour || []) if (t && t.date && t.key) add(p.artist, t, { p: p.id, k: t.key }, proj);
+  }
+  for (const s of (await env.DB.prepare('SELECT * FROM shows').all()).results) add(s.artist, s, { s: s.id }, null);
+  groups.sort((a, b) => a.date.localeCompare(b.date) || a.artist.localeCompare(b.artist));
+  const places = {};
+  for (const r of (await env.DB.prepare('SELECT key, lat, lon, label FROM places WHERE found = 1').all()).results) places[r.key] = { lat: r.lat, lon: r.lon, label: r.label };
+  const looked = new Set((await env.DB.prepare('SELECT key FROM places').all()).results.map(r => r.key));
+  const pending = new Set(groups.map(g => placeKey(g.city)).filter(k => k && !looked.has(k))).size;
+  return { shows: groups, places, pending };
+}
+
+async function tourAdd(b, user, env) {
+  const artist = String(b?.artist || '').trim();
+  if (!artist) throw new HttpError(400, 'Artist is required');
+  const shows = (Array.isArray(b.shows) ? b.shows : [b]).map(x => cleanShow(x));
+  const pids = await artistProjects(env, artist);
+  let added = 0;
+  if (pids.length) {
+    for (const [i, pid] of pids.entries()) {
+      await mutateProjectData(env, pid, user, d => {
+        d.tour ||= [];
+        let n = 0;
+        for (const s of shows) {
+          const dup = d.tour.find(t => sameShowRow(s, t));
+          if (dup) { if (s.announced && !dup.announced) { dup.announced = true; n++; } continue; }
+          d.tour.push({ key: crypto.randomUUID().slice(0, 8), ...s, source: 'manual' }); n++;
+          if (i === 0) added++;
+        }
+        d.tour.sort((x, y) => String(x.date || '9').localeCompare(String(y.date || '9')));
+        return n > 0;
+      });
+    }
+  } else {
+    await ensureArtist(artist, user, env);
+    const have = (await env.DB.prepare('SELECT * FROM shows WHERE artist = ? COLLATE NOCASE').bind(artist).all()).results;
+    for (const s of shows) {
+      if (have.some(h => sameShowRow(s, h))) continue;
+      const row = { id: crypto.randomUUID(), artist, ...s, announced: s.announced ? 1 : 0, cancelled: s.cancelled ? 1 : 0, updated_at: now(), updated_by: user.email };
+      const keys = Object.keys(row);
+      await env.DB.prepare(`INSERT INTO shows (${keys.join(', ')}) VALUES (${keys.map(() => '?').join(', ')})`).bind(...keys.map(k => row[k] ?? null)).run();
+      have.push(row); added++;
+    }
+  }
+  return { added, skipped: shows.length - added, projects: pids };
+}
+
+function parseRefs(refs) {
+  if (!Array.isArray(refs) || !refs.length) throw new HttpError(400, 'No show given');
+  for (const r of refs) if (!r || !(typeof r.s === 'string' || (typeof r.p === 'string' && typeof r.k === 'string'))) throw new HttpError(400, 'Bad show reference');
+  return refs;
+}
+
+function groupRefs(refs) {
+  const m = new Map();
+  for (const r of refs) if (r.p) { if (!m.has(r.p)) m.set(r.p, new Set()); m.get(r.p).add(r.k); }
+  return m;
+}
+
+async function tourEdit(refs, fields, user, env) {
+  refs = parseRefs(refs);
+  const f = cleanShow(fields, { partial: true });
+  for (const [pid, keys] of groupRefs(refs)) {
+    await mutateProjectData(env, pid, user, d => {
+      const hit = (d.tour || []).filter(t => keys.has(t.key));
+      if (!hit.length) return false;
+      for (const t of hit) Object.assign(t, f);
+      d.tour.sort((x, y) => String(x.date || '9').localeCompare(String(y.date || '9')));
+    });
+  }
+  const sets = Object.keys(f);
+  for (const r of refs.filter(r => r.s && sets.length)) {
+    await env.DB.prepare(`UPDATE shows SET ${sets.map(k => k + ' = ?').join(', ')}, updated_at = ?, updated_by = ? WHERE id = ?`)
+      .bind(...sets.map(k => typeof f[k] === 'boolean' ? (f[k] ? 1 : 0) : f[k]), now(), user.email, r.s).run();
+  }
+  return { ok: true };
+}
+
+async function tourDelete(refs, user, env) {
+  refs = parseRefs(refs);
+  for (const [pid, keys] of groupRefs(refs)) {
+    await mutateProjectData(env, pid, user, d => {
+      const gone = (d.tour || []).filter(t => keys.has(t.key));
+      if (!gone.length) return false;
+      // Pulled listings removed by hand aren't re-added later (same rule as the project page).
+      for (const t of gone) if (t.ext_id) (d.tour_dismissed ||= []).push(t.ext_id);
+      d.tour = d.tour.filter(t => !keys.has(t.key));
+    });
+  }
+  for (const r of refs.filter(r => r.s)) await env.DB.prepare('DELETE FROM shows WHERE id = ?').bind(r.s).run();
+  return { ok: true };
+}
+
+// A project for an artist with stand-alone shows takes them over.
+async function adoptShows(projectId, user, env) {
+  const p = await env.DB.prepare('SELECT artist FROM projects WHERE id = ?').bind(projectId).first();
+  if (!p?.artist) return;
+  const shows = (await env.DB.prepare('SELECT * FROM shows WHERE artist = ? COLLATE NOCASE').bind(p.artist).all()).results;
+  if (!shows.length) return;
+  await mutateProjectData(env, projectId, user, d => {
+    d.tour ||= [];
+    for (const s of shows) {
+      if (d.tour.some(t => sameShowRow(s, t))) continue;
+      d.tour.push({ key: crypto.randomUUID().slice(0, 8), date: s.date, city: s.city || '', venue: s.venue || '', notes: s.notes || '',
+        ticket_url: s.ticket_url || '', announced: !!s.announced, cancelled: !!s.cancelled, source: 'manual' });
+    }
+    d.tour.sort((x, y) => String(x.date || '9').localeCompare(String(y.date || '9')));
+  });
+  await env.DB.prepare('DELETE FROM shows WHERE artist = ? COLLATE NOCASE').bind(p.artist).run();
+  await logSync(env, 'info', `tour: ${shows.length} show(s) for ${p.artist} moved into the new project`);
+}
+
+// City → coordinates via OpenStreetMap's Nominatim (free; at most one lookup a second,
+// results cached for good). Runs from the 5-minute cron, a batch at a time.
+async function geocodeMissing(env, limit) {
+  try {
+    const cities = new Set();
+    for (const r of (await env.DB.prepare("SELECT DISTINCT json_extract(t.value, '$.city') c FROM projects, json_each(projects.data, '$.tour') t").all()).results) if (r.c) cities.add(placeKey(r.c));
+    for (const r of (await env.DB.prepare('SELECT DISTINCT city c FROM shows').all()).results) if (r.c) cities.add(placeKey(r.c));
+    const looked = new Set((await env.DB.prepare('SELECT key FROM places').all()).results.map(r => r.key));
+    const todo = [...cities].filter(k => k && !looked.has(k)).slice(0, limit);
+    for (const [i, key] of todo.entries()) {
+      if (i) await new Promise(r => setTimeout(r, 1100));
+      const r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(key)}`,
+        { headers: { 'User-Agent': 'fp-projects-tour-dates/1.0 (+https://fatpossumrecords.github.io/fp-projects/)', 'Accept-Language': 'en' } });
+      if (!r.ok) { await logSync(env, 'warn', `geocode "${key}": HTTP ${r.status}`); break; }
+      const hit = (await r.json())[0];
+      await env.DB.prepare('INSERT OR REPLACE INTO places (key, lat, lon, label, found, at) VALUES (?, ?, ?, ?, ?, ?)')
+        .bind(key, hit ? Number(hit.lat) : null, hit ? Number(hit.lon) : null, hit?.display_name?.slice(0, 200) || null, hit ? 1 : 0, now()).run();
+    }
+  } catch (e) { await logSync(env, 'warn', `geocode: ${e.message}`); }
 }
 
 // ── MUSE (agent) API ─────────────────────────────────────────
