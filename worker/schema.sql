@@ -182,13 +182,3 @@ CREATE TABLE IF NOT EXISTS shows (
   updated_by  TEXT
 );
 CREATE INDEX IF NOT EXISTS shows_artist ON shows (artist COLLATE NOCASE);
-
--- City → map coordinates (OpenStreetMap lookup, cached), for the distance filters.
-CREATE TABLE IF NOT EXISTS places (
-  key    TEXT PRIMARY KEY,     -- lower-cased city text, e.g. 'oxford, ms'
-  lat    REAL,
-  lon    REAL,
-  label  TEXT,                 -- what OpenStreetMap matched, for checking
-  found  INTEGER NOT NULL DEFAULT 0,
-  at     TEXT NOT NULL
-);

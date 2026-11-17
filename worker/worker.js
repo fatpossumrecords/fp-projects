@@ -230,7 +230,6 @@ async function route(request, url, env, ctx) {
     if (!id && m === 'POST') { write(); return json(await tourAdd(await body(request), user, env)); }
     if (id === 'edit' && m === 'POST') { write(); const b = await body(request); return json(await tourEdit(b.refs, b.fields, user, env)); }
     if (id === 'delete' && m === 'POST') { write(); return json(await tourDelete((await body(request)).refs, user, env)); }
-    if (id === 'places' && m === 'POST') return json(await savePlaces((await body(request)).places, env));
   }
 
   if (res === 'projects' && id && sub === 'milestones' && sub2 === 'generate' && m === 'POST') {
@@ -1200,7 +1199,6 @@ async function fetchFollowers(b, env) {
 // those shows move into the first project created for the artist.
 // Refs say where each copy of a show lives: { p: projectId, k: rowKey } or { s: showId }.
 const SHOW_FIELDS = ['date', 'city', 'venue', 'notes', 'ticket_url', 'announced', 'cancelled'];
-const placeKey = c => String(c || '').trim().toLowerCase().replace(/\s+/g, ' ');
 const sameShowRow = (x, y) => x.date && x.date === y.date && ((x.city && cityKey(x.city) === cityKey(y.city)) || (x.venue && y.venue && venueKey(x.venue) === venueKey(y.venue)));
 
 function cleanShow(f, { partial = false } = {}) {
@@ -1256,29 +1254,7 @@ async function tourList(env) {
   }
   for (const s of (await env.DB.prepare('SELECT * FROM shows').all()).results) add(s.artist, s, { s: s.id }, null);
   groups.sort((a, b) => a.date.localeCompare(b.date) || a.artist.localeCompare(b.artist));
-  const places = {};
-  for (const r of (await env.DB.prepare('SELECT key, lat, lon, label FROM places WHERE found = 1').all()).results) places[r.key] = { lat: r.lat, lon: r.lon, label: r.label };
-  const looked = new Set((await env.DB.prepare('SELECT key FROM places').all()).results.map(r => r.key));
-  const pending = [...new Set(groups.map(g => placeKey(g.city)).filter(k => k && !looked.has(k)))];
-  return { shows: groups, places, pending };
-}
-
-// City coordinates looked up by the Tour Dates page in the browser (OpenStreetMap
-// refuses lookups from Cloudflare's shared servers), saved for everyone.
-async function savePlaces(list, env) {
-  if (!Array.isArray(list)) throw new HttpError(400, 'places must be a list');
-  let saved = 0;
-  for (const p of list.slice(0, 50)) {
-    const key = placeKey(p?.key);
-    if (!key || key.length > 200) continue;
-    const found = p.lat != null && p.lon != null;
-    const lat = Number(p.lat), lon = Number(p.lon);
-    if (found && !(Math.abs(lat) <= 90 && Math.abs(lon) <= 180)) continue;
-    await env.DB.prepare('INSERT OR REPLACE INTO places (key, lat, lon, label, found, at) VALUES (?, ?, ?, ?, ?, ?)')
-      .bind(key, found ? lat : null, found ? lon : null, found ? String(p.label || '').slice(0, 200) : null, found ? 1 : 0, now()).run();
-    saved++;
-  }
-  return { saved };
+  return { shows: groups };
 }
 
 async function tourAdd(b, user, env) {

@@ -28,11 +28,6 @@ const realFetch = globalThis.fetch;
 globalThis.fetch = async (url, opts = {}) => {
   const u = new URL(url);
   if (u.host === 'oauth2.googleapis.com') return new Response(JSON.stringify({ access_token: 't', expires_in: 3600 }));
-  if (u.host === 'nominatim.openstreetmap.org') {
-    const q = u.searchParams.get('q');
-    const at = { 'oxford, ms': [34.366, -89.519], 'memphis, tn': [35.149, -90.049], 'london, uk': [51.507, -0.128], 'brooklyn, ny': [40.678, -73.944] }[q];
-    return new Response(JSON.stringify(at ? [{ lat: String(at[0]), lon: String(at[1]), display_name: q + ' (osm)' }] : []));
-  }
   if (u.host === 'api.chartmetric.com') {
     // Shapes copied from the Chartmetric API reference examples.
     const J = d => new Response(JSON.stringify(d));
@@ -298,12 +293,6 @@ await A('POST', '/api/tour', { artist: 'Solo Act', shows: [{ date: '2027-06-01',
 tl = await A('GET', '/api/tour');
 const solo = tl.shows.filter(s => s.artist === 'Solo Act');
 ok(solo.length === 2 && solo.every(s => s.refs[0].s && !s.projects.length), 'tour: shows for an artist without a project are kept on their own');
-ok(['oxford, ms', 'london, uk', 'memphis, tn'].every(k => tl.pending.includes(k)), 'tour: cities without coordinates are listed as pending');
-await A('POST', '/api/tour/places', { places: [{ key: 'Oxford, MS', lat: 34.366, lon: -89.519, label: 'Oxford' }, { key: 'london, uk', lat: 51.507, lon: -0.128 },
-  { key: 'memphis, tn', lat: 35.149, lon: -90.049 }, { key: 'nowhere town', lat: null, lon: null }, { key: 'bad', lat: 500, lon: 0 }] });
-tl = await A('GET', '/api/tour');
-ok(tl.places['oxford, ms']?.lat === 34.366 && tl.places['london, uk'] && tl.places['memphis, tn'] && !tl.places.bad, 'tour: coordinates looked up in the browser are saved for everyone');
-ok(!tl.pending.includes('oxford, ms') && !tl.places['nowhere town'], 'tour: looked-up cities are no longer pending; unrecognised ones are remembered');
 memphis = tl.shows.find(s => s.artist === 'Tour Band' && s.date === '2027-05-01');
 await A('POST', '/api/tour/edit', { refs: memphis.refs, fields: { venue: 'Minglewood Hall', announced: true } });
 const pa2 = await A('GET', '/api/projects/' + tpA.id), pb2 = await A('GET', '/api/projects/' + tpB.id);

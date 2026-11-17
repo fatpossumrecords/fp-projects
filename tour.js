@@ -3,23 +3,60 @@
    Shows for artists with a project live in that project's Tour
    Dates (added here, they go into the artist's current projects);
    artists without a project are stored on their own. City filters
-   use map coordinates looked up by the Worker (OpenStreetMap).
+   match the show's city against a list of places around each area.
    ============================================================ */
 (function () {
   const esc = FP.esc;
-  // Distance filters: centre + radius in miles.
+  // Area filters: the places that count as each area (rough, not exact). A town is
+  // matched on the part before the comma; if the show gives a state or country after
+  // the comma, it has to be one of the area's (so "London, ON" isn't London, and
+  // "Columbus, OH" isn't Columbus, MS). Towns marked * only match with a state given.
   const REGIONS = [
-    { key: 'nyc', label: 'New York', lat: 40.7128, lon: -74.0060, mi: 30 },
-    { key: 'london', label: 'London', lat: 51.5074, lon: -0.1278, mi: 30 },
-    { key: 'la', label: 'Los Angeles', lat: 34.0522, lon: -118.2437, mi: 40 },
-    { key: 'oxford', label: 'Oxford, MS', lat: 34.3665, lon: -89.5192, mi: 100 },
+    { key: 'nyc', label: 'New York', where: ['ny', 'new york', 'nyc', 'nj', 'new jersey', 'us', 'usa', 'united states'],
+      towns: `new york, new york city, nyc, manhattan, brooklyn, queens, bronx, the bronx, staten island, long island city, astoria, williamsburg,
+        bushwick, greenpoint, ridgewood, forest hills, flushing, jackson heights, harlem, jamaica*, jersey city, hoboken, newark, harrison,
+        east rutherford, montclair, elizabeth, union city, weehawken, yonkers, port chester, mount vernon` },
+    { key: 'london', label: 'London', where: ['uk', 'u.k', 'united kingdom', 'england', 'gb', 'great britain', 'london', 'greater london'],
+      towns: `london, hackney, camden, camden town, islington, brixton, shepherds bush, shepherd's bush, kentish town, dalston, peckham, shoreditch,
+        stoke newington, bethnal green, walthamstow, hammersmith, clapham, notting hill, deptford, new cross, tottenham, finsbury park, king's cross,
+        kings cross, soho, westminster, wembley, stratford*, croydon, kingston upon thames, kingston*, greenwich*, richmond*, ealing, chelsea*` },
+    { key: 'la', label: 'Los Angeles', where: ['ca', 'calif', 'california', 'los angeles', 'us', 'usa', 'united states'],
+      towns: `los angeles, la, l.a, dtla, hollywood, west hollywood, north hollywood, santa monica, venice*, pasadena, burbank, glendale, long beach,
+        echo park, silver lake, silverlake, highland park, eagle rock, los feliz, inglewood, culver city, beverly hills, malibu, el segundo, torrance,
+        van nuys, studio city, anaheim, santa ana, costa mesa, fullerton, pomona, ojai*` },
+    { key: 'oxford', label: 'Oxford, MS (100 mi)', where: ['ms', 'miss', 'mississippi', 'tn', 'tenn', 'tennessee', 'ar', 'ark', 'arkansas', 'al', 'ala', 'alabama', 'us', 'usa', 'united states'],
+      towns: `oxford*, water valley, taylor, batesville, sardis, como, senatobia, holly springs, hernando, southaven, olive branch, horn lake, memphis,
+        west memphis, germantown, collierville, bartlett, cordova*, millington, tupelo, pontotoc, new albany, ripley, corinth, booneville, iuka,
+        fulton*, okolona, aberdeen*, amory, houston*, west point*, starkville, columbus*, grenada, greenwood*, clarksdale, cleveland*, tunica,
+        helena*, jackson*, muscle shoals*, florence*, tuscumbia*` },
   ];
-  const miles = (a, b) => {
-    const r = x => x * Math.PI / 180, R = 3958.8;
-    const h = Math.sin(r(b.lat - a.lat) / 2) ** 2 + Math.cos(r(a.lat)) * Math.cos(r(b.lat)) * Math.sin(r(b.lon - a.lon) / 2) ** 2;
-    return 2 * R * Math.asin(Math.sqrt(h));
+  // Towns that need a state to count (common names elsewhere): only these states.
+  const STRICT = { oxford: { jackson: ['tn', 'tenn', 'tennessee'], 'muscle shoals': ['al', 'ala', 'alabama'], florence: ['al', 'ala', 'alabama'], tuscumbia: ['al', 'ala', 'alabama'], helena: ['ar', 'ark', 'arkansas'] } };
+  for (const r of REGIONS) {
+    r.set = new Map(r.towns.split(',').map(t => t.trim()).filter(Boolean).map(t => [t.replace(/\*$/, ''), t.endsWith('*')]));
+    r.whereSet = new Set(r.where);
+  }
+  const norm = s => String(s || '').toLowerCase().replace(/\./g, '').replace(/[’`]/g, "'").replace(/\s+/g, ' ').trim();
+  // "Brooklyn, NY" → { town: 'brooklyn', rest: 'ny' }; "Brooklyn NY" (no comma) works too.
+  const splitCity = city => {
+    const parts = norm(city).split(',').map(x => x.trim()).filter(Boolean);
+    if (parts.length > 1) return { town: parts[0], rest: parts.slice(1) };
+    const words = (parts[0] || '').split(' ');
+    for (const n of [2, 1]) {
+      const tail = words.slice(-n).join(' ');
+      if (words.length > n && REGIONS.some(r => r.whereSet.has(tail))) return { town: words.slice(0, -n).join(' '), rest: [tail] };
+    }
+    return { town: parts[0] || '', rest: [] };
   };
-  const placeKey = c => String(c || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const inRegion = (r, city) => {
+    const { town, rest } = splitCity(city);
+    if (!r.set.has(town)) return false;
+    const strict = r.set.get(town);
+    if (!rest.length) return !strict;
+    const states = STRICT[r.key]?.[town];
+    return rest.some(x => (states ? states : r.where).includes(x));
+  };
+  FP.tourInRegion = (key, city) => inRegion(REGIONS.find(r => r.key === key), city);   // for checking from the console
 
   let ui = { region: '', artist: '', when: 'upcoming', q: '' };
   try { Object.assign(ui, JSON.parse(localStorage.getItem('fp_tour_ui') || '{}')); } catch { /* defaults */ }
@@ -31,7 +68,7 @@
         ${w ? '<button class="btn" id="t-paste">Paste dates…</button><button class="btn-primary" id="t-add">+ Show</button>' : ''}</div>
       <div class="page-body">
         <div class="toolbar" style="margin-bottom:10px">
-          <div class="seg" id="t-region"><button data-v="">Everywhere</button>${REGIONS.map(r => `<button data-v="${r.key}" title="Within ${r.mi} miles">${esc(r.label)}${r.key === 'oxford' ? ' (100 mi)' : ''}</button>`).join('')}</div>
+          <div class="seg" id="t-region"><button data-v="">Everywhere</button>${REGIONS.map(r => `<button data-v="${r.key}">${esc(r.label)}</button>`).join('')}</div>
         </div>
         <div class="toolbar" style="margin-bottom:12px">
           <div class="seg" id="t-when"><button data-v="upcoming">Upcoming</button><button data-v="past">Past</button><button data-v="all">All</button></div>
@@ -42,7 +79,7 @@
         <div id="t-body"><div class="empty">Loading…</div></div>
       </div>`;
     const $ = s => main.querySelector(s);
-    let data = { shows: [], places: {}, pending: 0 };
+    let data = { shows: [] };
 
     const load = async () => {
       try { data = await FP.get('/api/tour'); }
@@ -51,59 +88,23 @@
       if (ui.artist && !artists.includes(ui.artist)) ui.artist = '';
       $('#t-artist').innerHTML = `<option value="">All artists</option>` + artists.map(a => `<option${a === ui.artist ? ' selected' : ''}>${esc(a)}</option>`).join('');
       draw();
-      locate();
     };
-
-    // Cities not on the map yet are looked up here, one a second (OpenStreetMap's limit),
-    // and saved for everyone. OpenStreetMap refuses these lookups from the Worker's servers.
-    let locating = false;
-    async function locate() {
-      if (locating || !data.pending?.length) return;
-      locating = true;
-      const batch = [];
-      const flush = async () => { if (batch.length) await FP.post('/api/tour/places', { places: batch.splice(0) }).catch(() => {}); };
-      try {
-        for (const key of [...data.pending]) {
-          if (!main.isConnected) break;                      // left the page
-          const r = await fetch(`https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(key)}`, { headers: { 'Accept-Language': 'en' } });
-          if (!r.ok) break;                                  // busy: try again next visit
-          const hit = (await r.json())[0];
-          batch.push(hit ? { key, lat: Number(hit.lat), lon: Number(hit.lon), label: hit.display_name } : { key, lat: null, lon: null });
-          if (hit) data.places[key] = { lat: Number(hit.lat), lon: Number(hit.lon), label: hit.display_name };
-          data.pending = data.pending.filter(k => k !== key);
-          if (batch.length >= 5) { await flush(); if (ui.region) draw(); }
-          await new Promise(res => setTimeout(res, 1100));
-        }
-      } catch { /* offline: try again next visit */ }
-      await flush();
-      locating = false;
-      if (main.isConnected) draw();
-    }
 
     const draw = () => {
       main.querySelectorAll('#t-region button').forEach(b => b.classList.toggle('on', b.dataset.v === ui.region));
       main.querySelectorAll('#t-when button').forEach(b => b.classList.toggle('on', b.dataset.v === ui.when));
       const today = FP.today(), q = ui.q.trim().toLowerCase();
       const region = REGIONS.find(r => r.key === ui.region);
-      let unplaced = 0;
       const list = data.shows.filter(s => {
         if (ui.when === 'upcoming' && s.date < today) return false;
         if (ui.when === 'past' && s.date >= today) return false;
         if (ui.artist && s.artist !== ui.artist) return false;
         if (q && ![s.city, s.venue, s.notes, s.artist].some(v => String(v || '').toLowerCase().includes(q))) return false;
-        if (region) {
-          const p = data.places[placeKey(s.city)];
-          if (!p) { unplaced++; return false; }
-          s.miles = Math.round(miles(region, p));
-          if (s.miles > region.mi) return false;
-        }
-        return true;
+        return !region || inRegion(region, s.city);
       });
       if (ui.when === 'past') list.reverse();
       $('#t-count').textContent = `${list.length} show${list.length === 1 ? '' : 's'}`;
-      const notes = [];
-      if (region) notes.push(`Within ${region.mi} miles of ${esc(region.label)}.`);
-      if (region && unplaced) notes.push(`${unplaced} show${unplaced === 1 ? '' : 's'} not on the map yet${data.pending?.length ? ` (locating cities: ${data.pending.length} to go, about ${Math.ceil(data.pending.length * 1.2 / 60)} min with this page open)` : ' (city not recognised)'}.`);
+      const notes = region ? [`Shows in ${esc(region.label.replace(/ \(.*\)$/, ''))} and nearby (${esc([...region.set.keys()].slice(0, 6).join(', '))}…).`] : [];
       let html = '', month = '';
       for (const s of list) {
         const m = s.date.slice(0, 7);
@@ -112,7 +113,7 @@
         html += `<tr data-i="${i}"${s.date < today ? ' class="past"' : ''}${w ? ' style="cursor:pointer"' : ''}>
           <td class="mono" style="white-space:nowrap">${esc(FP.fmtDate(s.date, { weekday: 'short', month: 'short', day: 'numeric' }))}</td>
           <td><b>${esc(s.artist)}</b></td>
-          <td>${esc(s.city)}${region && s.miles != null && s.miles > 5 ? ` <span class="hint">${s.miles} mi</span>` : ''}</td>
+          <td>${esc(s.city)}</td>
           <td>${FP.safeUrl(s.ticket_url) ? `<a href="${esc(s.ticket_url)}" target="_blank" rel="noopener">${esc(s.venue || 'Tickets')} ↗</a>` : esc(s.venue)}</td>
           <td>${s.cancelled ? '<span class="badge s-cancelled">Cancelled</span> ' : ''}${!s.announced && !s.cancelled ? '<span class="badge s-planning">Not announced</span> ' : ''}${esc(s.notes)}</td>
           <td>${s.projects.length ? s.projects.map(p => `<a href="#/projects/${p.id}?tab=info" title="Open the project">${esc(p.title)}</a>`).join(', ') : '<span class="hint">No project</span>'}</td>
