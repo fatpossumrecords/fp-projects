@@ -41,7 +41,7 @@ const TABLES = {
   },
   milestones: {
     table: 'milestones', dateCol: 'date', order: 'date', cal: 'milestone',
-    cols: ['project_id', 'type', 'title', 'date', 'done', 'owner', 'notes'],
+    cols: ['project_id', 'type', 'title', 'date', 'done', 'owner', 'notes', 'gcal'],
     required: ['title', 'date'],
   },
   social: {
@@ -838,7 +838,8 @@ async function pushRecord(env, kind, id) {
     const row = await env.DB.prepare(`SELECT * FROM ${table} WHERE id = ?`).bind(id).first();
     if (!row) return;
     const date = kind === 'release' ? row.release_date : row.date;
-    if (!date) {
+    // Internal dates go on the calendar only when ticked ("Google Cal"); unticking takes the event off.
+    if (!date || (kind === 'milestone' && !row.gcal)) {
       if (row.gcal_event_id) {
         await deleteEvent(env, kind, row.gcal_event_id);
         await env.DB.prepare(`UPDATE ${table} SET gcal_event_id = NULL WHERE id = ?`).bind(id).run();
@@ -918,15 +919,17 @@ async function pullCalendar(env, kind) {
     if (r.status >= 300) throw new Error(`list ${kind} ${r.status}: ${JSON.stringify(r.data).slice(0, 300)}`);
 
     for (const ev of r.data.items || []) {
-      const fpId = ev.extendedProperties?.private?.fpId;
+      const fpId = ev.extendedProperties?.private?.fpId, fpType = ev.extendedProperties?.private?.fpType;
+      if (fpType && fpType !== kind) continue;                                            // the other kind's event (shared calendar)
       if (!fpId && !known.has(ev.id) && (shared || ev.status === 'cancelled')) continue;   // not ours
       const row = await env.DB.prepare(`SELECT * FROM ${table} WHERE ${fpId ? 'id = ?' : 'gcal_event_id = ?'}`).bind(fpId || ev.id).first();
 
       if (ev.status === 'cancelled') {
         if (!row || row.gcal_event_id !== ev.id) continue;
         if (kind === 'milestone') {
-          await env.DB.prepare('DELETE FROM milestones WHERE id = ?').bind(row.id).run();
-          await logSync(env, 'info', `milestone "${row.title}" deleted in Google Calendar — removed from app`);
+          // Opt-in dates: removing the event from Google just takes the date off the calendar.
+          await env.DB.prepare('UPDATE milestones SET gcal = 0, gcal_event_id = NULL WHERE id = ?').bind(row.id).run();
+          await logSync(env, 'info', `internal date "${row.title}" removed from Google Calendar — kept in the app, unticked`);
         } else {
           await env.DB.prepare('UPDATE releases SET gcal_event_id = NULL WHERE gcal_event_id = ?').bind(ev.id).run();
           await logSync(env, 'warn', `release "${row.artist} — ${row.title}" was deleted in Google Calendar. Kept in app; it's re-created on the next sync.`);
@@ -948,7 +951,7 @@ async function pullCalendar(env, kind) {
           await ensureArtist(p.artist, SYSTEM, env);
         } else {
           const p = parseMilestoneSummary(ev.summary);
-          id = await insertRow(TABLES.milestones, { ...p, date, project_id: null, type: 'custom', notes: ev.description || null, gcal_event_id: ev.id }, SYSTEM, env);
+          id = await insertRow(TABLES.milestones, { ...p, date, project_id: null, type: 'custom', notes: ev.description || null, gcal_event_id: ev.id, gcal: 1 }, SYSTEM, env);
         }
         await gcal(env, kind, 'PATCH', '/' + encodeURIComponent(ev.id), {
           payload: { extendedProperties: { private: { fpType: kind, fpId: id } } },
@@ -1039,7 +1042,7 @@ async function runCalendarSync(env) {
       // Backfill: records that have a date but no event yet (imports, failed pushes).
       const table = kind === 'release' ? 'releases' : 'milestones';
       const dateCol = kind === 'release' ? 'release_date' : 'date';
-      const missing = await env.DB.prepare(`SELECT id FROM ${table} WHERE gcal_event_id IS NULL AND ${dateCol} IS NOT NULL LIMIT 40`).all();
+      const missing = await env.DB.prepare(`SELECT id FROM ${table} WHERE gcal_event_id IS NULL AND ${dateCol} IS NOT NULL${kind === 'milestone' ? ' AND gcal = 1' : ''} LIMIT 40`).all();
       await pushMany(env, kind, missing.results.map(r => r.id));
       if (kind === 'release') await regroupReleaseEvents(env);
       summary[kind] = { pushed: missing.results.length, pulled: await pullCalendar(env, kind) };

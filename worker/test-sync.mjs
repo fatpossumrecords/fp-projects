@@ -122,7 +122,20 @@ ok(r1.status === 'Released' && r1.release_date === '2027-02-12', 'sync after app
 // 6. deletions
 cals.INT.get(nid).status = 'cancelled'; touch('INT', cals.INT.get(nid));
 await A('POST', '/api/sync');
-ok(!(await A('GET', '/api/milestones')).some(m => m.id === created.id), 'deleting internal date in Google deletes it in app');
+const unt = (await A('GET', '/api/milestones')).find(m => m.id === created.id);
+ok(unt && !unt.gcal && !unt.gcal_event_id, 'deleting an internal date\'s event in Google keeps the date in the app, unticked');
+
+// 6b. internal dates are opt-in for Google Calendar
+const om = await A('POST', '/api/milestones', { title: 'Opt-in test', date: '2027-03-03' });
+ok(!om.gcal_event_id && ![...cals.INT.values()].some(e => e.extendedProperties?.private?.fpId === om.id), 'a new internal date stays off Google Calendar by default');
+await A('POST', '/api/sync');
+ok(!(await A('GET', '/api/milestones/' + om.id)).gcal_event_id, 'the background sync does not push unticked dates');
+await A('PUT', '/api/milestones/' + om.id, { gcal: true });
+const omOn = await A('GET', '/api/milestones/' + om.id);
+ok(omOn.gcal && omOn.gcal_event_id && cals.INT.get(omOn.gcal_event_id)?.summary === 'Opt-in test', 'ticking Google Cal puts the date on the calendar');
+await A('PUT', '/api/milestones/' + om.id, { gcal: false });
+const omOff = await A('GET', '/api/milestones/' + om.id);
+ok(!omOff.gcal_event_id && cals.INT.get(omOn.gcal_event_id).status === 'cancelled', 'unticking takes it off the calendar');
 const evId = r1.gcal_event_id; cals.REL.get(evId).status = 'cancelled'; touch('REL', cals.REL.get(evId));
 await A('POST', '/api/sync');
 r1 = await A('GET', '/api/releases/' + rel.id);

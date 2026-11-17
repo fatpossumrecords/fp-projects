@@ -82,6 +82,7 @@ CREATE TABLE IF NOT EXISTS milestones (
   owner         TEXT,
   notes         TEXT,
   gcal_event_id TEXT,
+  gcal          INTEGER NOT NULL DEFAULT 0,   -- 1 = put on Google Calendar (opt-in per date)
   updated_at    TEXT NOT NULL,
   updated_by    TEXT
 );

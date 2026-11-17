@@ -333,12 +333,12 @@
   // ── INTERNAL DATES (per project) ───────────────────────────
   async function renderDates(box, proj) {
     let ms = await FP.get('/api/milestones?project_id=' + proj.id);
-    const w = FP.canWrite();
+    const w = FP.canWrite(), gc = !!FP.state.calendar.internal;
     box.innerHTML = `
       <div class="toolbar" style="margin-bottom:12px">
         ${w ? `<button class="btn" id="d-gen">Add standard dates from template</button><button class="btn" id="d-add">+ Custom date</button>` : ''}
         <span class="spacer"></span>
-        <span class="hint">${proj.release_date ? `Release date: <b>${FP.fmtDate(proj.release_date)}</b>` : 'No release date set'}${FP.state.calendar.internal ? ' · Syncs with the internal Google Calendar' : ''}</span>
+        <span class="hint">${proj.release_date ? `Release date: <b>${FP.fmtDate(proj.release_date)}</b>` : 'No release date set'}${gc ? ' · Tick <b>Google Cal</b> to put a date on the Fat Possum calendar' : ''}</span>
       </div>
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,560px),1fr));gap:16px;align-items:start">
         <div id="d-list"></div><div id="d-cal"></div>
@@ -348,7 +348,7 @@
       ms.sort((a, b) => a.date.localeCompare(b.date));
       const today = FP.today();
       box.querySelector('#d-list').innerHTML = ms.length ? `<div class="tbl-wrap"><table class="tbl ${w ? 'edit' : ''}">
-        <thead><tr><th style="width:30px">✓</th><th style="min-width:200px">Item</th><th style="min-width:140px">Date</th><th style="min-width:90px">vs release</th><th style="min-width:130px">Owner</th><th></th></tr></thead>
+        <thead><tr><th style="width:30px">✓</th><th style="min-width:200px">Item</th><th style="min-width:140px">Date</th><th style="min-width:90px">vs release</th><th style="min-width:130px">Owner</th>${gc ? '<th style="width:70px;text-align:center" title="Put this date on the Fat Possum Google Calendar">Google Cal</th>' : ''}<th></th></tr></thead>
         <tbody>${ms.map(m => {
           const rel = proj.release_date ? Math.round((FP.parseYmd(m.date) - FP.parseYmd(proj.release_date)) / 864e5) : null;
           const late = !m.done && m.date < today;
@@ -358,6 +358,7 @@
             <td>${w ? `<input type="date" data-f="date" value="${m.date}"${late ? ' style="color:var(--red);font-weight:600"' : ''}>` : FP.fmtDate(m.date)}</td>
             <td class="mono" style="color:var(--text-muted)">${rel === null ? '' : rel === 0 ? 'release day' : rel < 0 ? `${-rel}d before` : `${rel}d after`}</td>
             <td>${w ? `<select data-f="owner">${FP.options(FP.userNames(), m.owner)}</select>` : esc(m.owner)}</td>
+            ${gc ? `<td style="text-align:center"><input type="checkbox" data-f="gcal" title="Put this date on the Fat Possum Google Calendar"${m.gcal ? ' checked' : ''}${w ? '' : ' disabled'}></td>` : ''}
             <td class="row-actions"><button class="btn-ghost btn-sm" data-open>⋯</button></td></tr>`;
         }).join('')}</tbody></table></div>` : '<div class="empty">No internal dates yet. Add the standard set from the template, or add custom dates.</div>';
       box.querySelectorAll('[data-f]').forEach(inp => inp.addEventListener('change', async () => {
@@ -373,7 +374,7 @@
         headerToolbar: { left: 'prev,next', center: 'title', right: 'today' }, height: 'auto', editable: w,
         events: [
           ...(proj.release_date ? [{ title: '★ Release', start: proj.release_date, allDay: true, backgroundColor: '#b83228', borderColor: '#b83228', editable: false }] : []),
-          ...ms.map(m => ({ id: m.id, title: (m.done ? '✓ ' : '') + m.title, start: m.date, allDay: true, backgroundColor: m.done ? '#e6f4ed' : '#fef3dc', borderColor: m.done ? '#9fd0b4' : '#e6c77d', textColor: m.done ? '#1e7e4a' : '#8a5c08' })),
+          ...ms.map(m => ({ id: m.id, title: (m.done ? '✓ ' : '') + (m.gcal ? '📅 ' : '') + m.title, start: m.date, allDay: true, backgroundColor: m.done ? '#e6f4ed' : '#fef3dc', borderColor: m.done ? '#9fd0b4' : '#e6c77d', textColor: m.done ? '#1e7e4a' : '#8a5c08' })),
         ],
         eventDrop: async info => {
           const m = ms.find(x => x.id === info.event.id);
@@ -413,6 +414,7 @@
         ${FP.field('Project', `<select name="project_id"><option value="">— Unassigned —</option>${projects.map(p => `<option value="${p.id}"${p.id === m.project_id ? ' selected' : ''}>${esc(p.artist)} — ${esc(p.title)}</option>`).join('')}</select>`, 'wide')}
         ${FP.field('Notes', `<textarea name="notes">${esc(m.notes)}</textarea>`, 'wide')}
         <label><input type="checkbox" name="done"${m.done ? ' checked' : ''}> Done</label>
+        ${FP.state.calendar.internal ? `<label><input type="checkbox" name="gcal"${m.gcal ? ' checked' : ''}> Put on the Fat Possum Google Calendar</label>` : ''}
       </div>`,
       onSave: w ? async el => {
         const f = FP.readForm(el);
