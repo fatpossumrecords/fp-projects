@@ -22,7 +22,7 @@
         kings cross, soho, westminster, wembley, stratford*, croydon, kingston upon thames, kingston*, greenwich*, richmond*, ealing, chelsea*` },
     { key: 'la', label: 'Los Angeles', where: ['ca', 'calif', 'california', 'los angeles', 'us', 'usa', 'united states'],
       towns: `los angeles, la, l.a, dtla, hollywood, west hollywood, north hollywood, santa monica, venice*, pasadena, burbank, glendale, long beach,
-        echo park, silver lake, silverlake, highland park, eagle rock, los feliz, inglewood, culver city, beverly hills, malibu, el segundo, torrance,
+        echo park, silver lake, silverlake, highland park, eagle rock, los feliz, south pasadena, alhambra, east los angeles, boyle heights, inglewood, culver city, beverly hills, malibu, el segundo, torrance,
         van nuys, studio city, anaheim, santa ana, costa mesa, fullerton, pomona, ojai*` },
     { key: 'oxford', label: 'Oxford, MS (100 mi)', where: ['ms', 'miss', 'mississippi', 'tn', 'tenn', 'tennessee', 'ar', 'ark', 'arkansas', 'al', 'ala', 'alabama', 'us', 'usa', 'united states'],
       towns: `oxford*, water valley, taylor, batesville, sardis, como, senatobia, holly springs, hernando, southaven, olive branch, horn lake, memphis,
@@ -54,7 +54,8 @@
     const strict = r.set.get(town);
     if (!rest.length) return !strict;
     const states = STRICT[r.key]?.[town];
-    return rest.some(x => (states ? states : r.where).includes(x));
+    // After the comma: the area's state / country, or another place in the area ("London, Westminster").
+    return rest.some(x => states ? states.includes(x) : r.whereSet.has(x) || r.set.has(x));
   };
   FP.tourInRegion = (key, city) => inRegion(REGIONS.find(r => r.key === key), city);   // for checking from the console
 
