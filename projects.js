@@ -434,6 +434,7 @@
     _projCache = projects;
     const pIdx = Object.fromEntries(projects.map(p => [p.id, p]));
     let view = params.view || 'list', owner = params.owner || '', showDone = params.done === '1';
+    const gc = !!FP.state.calendar.internal;
     main.innerHTML = `
       <div class="page-head"><h2>Internal Dates</h2>
         <div class="seg" id="i-view"><button data-v="list">List</button><button data-v="calendar">Calendar</button></div>
@@ -443,7 +444,7 @@
           <select id="i-owner">${FP.options(FP.userNames(), owner, { blankLabel: 'All owners' })}</select>
           <label><input type="checkbox" id="i-done"${showDone ? ' checked' : ''}> Show completed</label>
           <span class="spacer"></span>
-          <span class="hint">${FP.state.calendar.internal ? 'Synced both ways with the internal Google Calendar' : 'Google Calendar sync is not configured yet'}</span>
+          <span class="hint">${gc ? 'Tick <b>Google Cal</b> to put a date on the Fat Possum calendar' : 'Google Calendar sync is not configured yet'}</span>
         </div>
         <div id="i-box"></div></div>`;
     const $ = s => main.querySelector(s);
@@ -460,7 +461,7 @@
         cal = new FullCalendar.Calendar(box.firstChild, {
           initialView: 'dayGridMonth', headerToolbar: { left: 'prev,next today', center: 'title', right: 'dayGridMonth,dayGridWeek,listMonth' },
           buttonText: { today: 'Today', month: 'Month', week: 'Week', list: 'List' }, height: 'auto', editable: FP.canWrite(), dayMaxEvents: 6,
-          events: list.map(m => ({ id: m.id, title: `${m.done ? '✓ ' : ''}${pIdx[m.project_id]?.artist ? pIdx[m.project_id].artist + ': ' : ''}${m.title}`, start: m.date, allDay: true,
+          events: list.map(m => ({ id: m.id, title: `${m.done ? '✓ ' : ''}${m.gcal ? '📅 ' : ''}${pIdx[m.project_id]?.artist ? pIdx[m.project_id].artist + ': ' : ''}${m.title}`, start: m.date, allDay: true,
             backgroundColor: FP.statusColor(pIdx[m.project_id]?.status), borderColor: FP.statusColor(pIdx[m.project_id]?.status), textColor: FP.statusTextColor(pIdx[m.project_id]?.status) })),
           eventClick: info => openMilestone(ms.find(x => x.id === info.event.id), () => FP.navigate()),
           eventDrop: async info => {
@@ -484,17 +485,23 @@
       for (const [name, test] of buckets) {
         const items = list.filter(test).sort((a, b) => a.date.localeCompare(b.date));
         if (!items.length) continue;
-        html += `<tr class="group"><td colspan="5">${name} · ${items.length}</td></tr>` + items.map(m => `
+        html += `<tr class="group"><td colspan="${gc ? 6 : 5}">${name} · ${items.length}</td></tr>` + items.map(m => `
           <tr data-id="${m.id}"${m.done ? ' class="past"' : ''} style="cursor:pointer">
             <td class="mono" style="${name === 'Overdue' ? 'color:var(--red);font-weight:600' : ''}">${FP.fmtDate(m.date, { weekday: 'short', month: 'short', day: 'numeric' })}</td>
             <td><span class="dot" style="background:${FP.statusColor(pIdx[m.project_id]?.status)}"></span>${esc(label(m))}</td>
             <td>${m.done ? '✓ ' : ''}${esc(m.title)}</td><td>${esc(m.owner)}</td>
+            ${gc ? `<td style="text-align:center"><input type="checkbox" data-gcal title="Put this date on the Fat Possum Google Calendar"${m.gcal ? ' checked' : ''}${FP.canWrite() ? '' : ' disabled'}></td>` : ''}
             <td class="row-actions">${m.project_id ? `<a class="btn-ghost btn-sm" href="#/projects/${m.project_id}?tab=dates">Project ↗</a>` : ''}</td></tr>`).join('');
       }
-      box.innerHTML = html ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Project</th><th>Item</th><th>Owner</th><th></th></tr></thead><tbody>${html}</tbody></table></div>`
+      box.innerHTML = html ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th>Date</th><th>Project</th><th>Item</th><th>Owner</th>${gc ? '<th style="width:70px;text-align:center">Google Cal</th>' : ''}<th></th></tr></thead><tbody>${html}</tbody></table></div>`
         : '<div class="empty">Nothing here. 🎉</div>';
+      box.querySelectorAll('[data-gcal]').forEach(inp => inp.addEventListener('change', async () => {
+        const m = ms.find(x => x.id === inp.closest('tr').dataset.id);
+        try { Object.assign(m, await FP.saveRecord('milestones', m, { gcal: inp.checked })); FP.toast(inp.checked ? 'Added to Google Calendar' : 'Removed from Google Calendar'); draw(); }
+        catch (e) { if (e.status !== 409) FP.toast(e.message, true); draw(); }
+      }));
       box.querySelectorAll('tr[data-id]').forEach(tr => tr.addEventListener('click', e => {
-        if (e.target.closest('a')) return;
+        if (e.target.closest('a, input')) return;
         openMilestone(ms.find(x => x.id === tr.dataset.id), () => FP.navigate());
       }));
     };
